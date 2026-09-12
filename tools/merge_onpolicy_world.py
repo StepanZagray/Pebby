@@ -3,6 +3,8 @@
 Each source remains tied to its own behavior checkpoint and exact global policy
 row indices. Nested aggregates are rejected; pass all original round banks.
 """
+from pebby.ls20.provenance import generated_context, row_contexts
+
 import argparse
 import copy
 import json
@@ -73,9 +75,9 @@ def inspect_source(path):
         levels=stream._source_levels(meta,path)
         if set(levels)!=unique:raise MergeError('source proof level set differs from row seeds')
         for seed,level in levels.items():
-            if level.get('context_engine_verified') is not True or level.get('search_truncated',False) or level.get('context_index')!=seed%7 or 'excluded' in level:
+            if level.get('context_engine_verified') is not True or level.get('search_truncated',False) or level.get('context_index')!=generated_context(level) or 'excluded' in level:
                 raise MergeError('source lacks complete contextual engine proof')
-        if 'context_index' in names and not np.array_equal(archive['context_index'],seeds%7):
+        if 'context_index' in names and not np.array_equal(archive['context_index'],row_contexts(seeds, levels.values())):
             raise MergeError('row context disagrees with seed')
         marked=meta.get('on_policy_rows')
         if not isinstance(marked,list) or not marked or any(type(index) is not int for index in marked) or marked!=sorted(set(marked)) or marked[0]<0 or marked[-1]>=len(seeds):

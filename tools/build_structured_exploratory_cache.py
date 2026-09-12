@@ -1,4 +1,6 @@
 """Held-out chronological K4 fields, separate from one-step action-alternative caches."""
+from pebby.ls20.provenance import metadata_difficulty_stages, cache_difficulty_metadata
+
 import argparse
 import json
 import os
@@ -64,8 +66,9 @@ def select_anchors(data,index,size,seed=42):
     difficulty={int(x['seed']):int(x['difficulty']) for x in data['meta']['levels']}
     rng=np.random.default_rng(seed);chosen=[]
     if size<1:raise ValueError('positive level count required')
-    for d in range(1,6):
-        pool=sorted(s for s in grouped if difficulty[s]==d);count=size//5+int(d<=size%5)
+    stages = metadata_difficulty_stages(data['meta'])
+    for d in stages:
+        pool=sorted(s for s in grouped if difficulty[s]==d);count=size//len(stages)+int(d<=size%len(stages))
         if len(pool)<count:raise ValueError('insufficient balanced distinct levels')
         chosen.extend(rng.choice(pool,count,replace=False).tolist())
     return np.asarray([rng.choice(grouped[s]) for s in chosen],dtype=np.int64)
@@ -122,9 +125,9 @@ def write_cache(data,index,source,index_path,out,assembler,provenance,levels=8,s
             array=np.load(path,mmap_mode='r',allow_pickle=False)
             inventory[path.stem]={'shape':list(array.shape),'dtype':str(array.dtype),'sha256':digest(path)}
         if any(digest(path)!=sha for path,sha in hashes.items()):raise ValueError('source/index/builder changed')
-        manifest={'format':FORMAT,'status':'complete','source':'generated_only','split':'train','mode':'exploratory_chronological_K4',
+        manifest={**cache_difficulty_metadata(data['meta'], arrays['seeds']), 'format':FORMAT,'status':'complete','source':'generated_only','split':'train','mode':'exploratory_chronological_K4',
                   'levels':levels,'encoding_precision':{'device':str(next(assembler.parameters()).device),'compute_dtype':'float32','cache_dtype':'float16','autocast':False,'matmul_tf32_allowed':torch.backends.cuda.matmul.allow_tf32,'cudnn_tf32_allowed':torch.backends.cudnn.allow_tf32},'source_hashes':hashes,'source_index_metadata':index.meta,'field_encoder':provenance,
-                  'arrays':inventory,'selection_seed':seed,'difficulty_counts':{str(d):int((arrays['difficulties']==d).sum()) for d in range(1,6)},
+                  'arrays':inventory,'selection_seed':seed,'difficulty_counts':{str(d):int((arrays['difficulties']==d).sum()) for d in metadata_difficulty_stages(data['meta'])},
                   'chronological_actions':'actions[N,4] from actual future_rows producing actions; values0..3. Never action alternatives.',
                   'history_verified_against_actual_source_rows':True,
                   'exact_label_mapping':{'current':CURRENT,'future':FUTURE,'distances':'exact future current-state distance via complete optimal branch distances+1'},

@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from pebby.agent import world_data
 from pebby.ls20 import generate
-from pebby.ls20.curriculum import DIFFICULTIES, generate_level as curriculum_level
+from pebby.ls20.curriculum import LEGACY_DIFFICULTIES as DIFFICULTIES, generate_legacy_level as curriculum_level
 from pebby.ls20.env import Ls20Scenario
 
 
@@ -41,7 +41,7 @@ def main(argv=None):
     parser.add_argument("--history", type=int, default=8)
     parser.add_argument("--json", action="store_true", help="print one JSON document")
     args = parser.parse_args(argv)
-    specs = [generate.generate_level(0, 1)] + [curriculum_level(d, d) for d in DIFFICULTIES]
+    specs = [generate.generate_legacy_level(0, 1)] + [curriculum_level(d, d) for d in DIFFICULTIES]
     report = []
     for spec in specs:
         entry = {"seed": spec["seed"], "difficulty": spec.get("difficulty"),

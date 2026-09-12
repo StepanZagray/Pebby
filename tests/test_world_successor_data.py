@@ -10,7 +10,7 @@ from pebby.ls20 import generate, names
 
 class SuccessorDataTests(unittest.TestCase):
     def test_masks_match_real_second_actions_in_generated_contexts(self):
-        spec = generate.generate_level(0, 1)
+        spec = generate.generate_legacy_level(0, 1)
         checked = 0
         for context in (0, 3, 6):
             env, oracle, proof = world_data.verified_context(spec, context)
@@ -47,7 +47,7 @@ class SuccessorDataTests(unittest.TestCase):
         self.assertEqual(world_data.successor_optimal_mask(complete, None, terminal=True), 0)
 
     def test_alive_life_loss_reset_gets_its_own_action_target(self):
-        spec = generate.generate_level(0, 1)
+        spec = generate.generate_legacy_level(0, 1)
         free = {(3, 3), (4, 3), (5, 3)}
         spec = {**spec, 'start': (3, 3), 'start_triple': [0, 0, 0],
                 'walls': sorted({(x, y) for x in range(12) for y in range(12)} - free),

@@ -4,6 +4,8 @@ Every collector expansion is checked against the complete contextual Oracle's
 logical transition, including all four real engine branches. These checks cover
 collected states and actions, not every reachable state in each level.
 """
+from pebby.ls20.provenance import generated_context, row_contexts
+
 import argparse
 from collections import Counter
 import hashlib
@@ -63,9 +65,9 @@ def collect_checked(specs):
     if len(arrays['meta']['levels']) != len(specs) or any('excluded' in row for row in arrays['meta']['levels']):
         raise ContractMismatch('collector produced excluded or missing level proofs')
     if not all(row.get('context_engine_verified') and not row.get('search_truncated')
-               and row.get('context_index') == row['seed'] % 7 for row in arrays['meta']['levels']):
+               and row.get('context_index') == generated_context(row) for row in arrays['meta']['levels']):
         raise ContractMismatch('incomplete or wrong-context collector proof')
-    if not np.all(arrays['context_index'] == arrays['seeds'] % 7):
+    if not np.all(arrays['context_index'] == row_contexts(arrays['seeds'], arrays['meta']['levels'])):
         raise ContractMismatch('wrong per-row context')
     if np.any(arrays['won'] & ~arrays['terminal']):
         raise ContractMismatch('nonterminal winning successor')

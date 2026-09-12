@@ -14,7 +14,7 @@ from pebby.agent.history import PolicyHistory, for_policy
 from pebby.agent.model import build_policy, load_checkpoint, save_checkpoint
 from pebby.agent.world_data import history_arrays
 from pebby.ls20 import names
-from pebby.ls20.curriculum import generate_level
+from pebby.ls20.curriculum import generate_legacy_level as generate_level
 from pebby.ls20.env import Ls20Env
 from pebby.ls20.generate import FORMAT, GENERATOR_VERSION, build_level
 

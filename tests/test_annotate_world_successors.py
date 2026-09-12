@@ -16,7 +16,7 @@ class AnnotateSuccessorsTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.spec = generate.generate_level(0, 1)
+        self.spec = generate.generate_legacy_level(0, 1)
         self.bank = self.root / 'bank.jsonl'
         self.bank.write_text(json.dumps(self.spec) + '\n')
         self.data = world_data.build([self.spec], history=4, samples=4, coverage='mixed', workers=1)

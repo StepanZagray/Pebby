@@ -3,6 +3,8 @@
 Cache labels supervise outputs; the transition receives only fields and actions.
 Validation never selects a checkpoint or determines the number of updates.
 """
+from pebby.ls20.provenance import (validate_row_difficulties, metadata_difficulty_stages, metadata_difficulty_version)
+
 import argparse
 import gc
 import hashlib
@@ -76,8 +78,7 @@ def load_cache(path, split):
                 raise ValueError('fields must be floating point')
         elif name not in EVENTS and not np.issubdtype(arrays[name].dtype, np.integer):
             raise ValueError(f'noninteger label: {name}')
-    if not np.all((arrays['difficulties'] >= 1) & (arrays['difficulties'] <= 5)):
-        raise ValueError('difficulties must be1..5')
+    validate_row_difficulties(arrays['seeds'], arrays['difficulties'], manifest)
     if not np.all(arrays['terminal'][arrays['won'].astype(bool)]):
         raise ValueError('winning branches must terminate')
     return arrays, manifest
@@ -257,6 +258,8 @@ def main():
         validation, val_manifest = load_cache(Path(args.cache)/'validation', 'validation')
         if np.intersect1d(train['seeds'], validation['seeds']).size:
             raise ValueError('training and validation levels overlap')
+        if metadata_difficulty_version(train_manifest) != metadata_difficulty_version(val_manifest):
+            raise ValueError('train and validation difficulty versions differ')
         if train_manifest['field_encoder'] != val_manifest['field_encoder']:
             raise ValueError('training and validation field encoders differ')
         sources = {str(Path(args.cache)/split/'manifest.json'): digest(Path(args.cache)/split/'manifest.json')
@@ -284,7 +287,7 @@ def main():
         model = new_model(args.seed, args.device, args.loops).train()
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=.01)
         rng = np.random.default_rng(args.seed)
-        draws = np.zeros(5, dtype=np.int64)
+        draws = np.zeros(len(metadata_difficulty_stages(train_manifest)), dtype=np.int64)
         report.update(parameters=model.parameter_count(), training=[])
         for step in range(args.updates):
             rows = sample_rows(train, batch_size, step/max(args.updates-1, 1), rng)
@@ -300,7 +303,7 @@ def main():
             result['total'].backward()
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 10., error_if_nonfinite=True)
             optimizer.step()
-            draws += np.bincount(train['difficulties'][rows], minlength=6)[1:6]
+            draws += np.bincount(train['difficulties'][rows], minlength=len(draws)+1)[1:len(draws)+1]
             if (step+1) % 20 == 0 or step == 0 or step+1 == args.updates:
                 event = {'step': step+1, 'loss': float(result['total'].detach()),
                          'losses': {k: float(v.detach()) for k, v in result['losses'].items()},

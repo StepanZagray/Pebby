@@ -5,6 +5,8 @@ level index supports distinct-level sampling followed by a within-level draw.
 Imagined targets are computed in FP32 from stored-current FP16 fields promoted
 to FP32, matching existing cached policy training, then stored in FP16.
 """
+from pebby.ls20.provenance import validate_difficulty
+
 import argparse
 import json
 import os
@@ -110,7 +112,7 @@ def row_metadata(data):
     on_policy=np.zeros(n,dtype=bool);on_policy[marked]=True
     levels={int(x['seed']):x for x in meta['levels']}
     difficulties=np.asarray([levels[int(s)]['difficulty'] for s in data['seeds']],dtype=np.int8)
-    if np.any((difficulties<1)|(difficulties>5)):raise ValueError('difficulty outside1..5')
+    for level in levels.values(): validate_difficulty(level)
     seeds, counts=np.unique(data['seeds'],return_counts=True)
     result=dict(source_rows=np.arange(n,dtype=np.int64),seeds=np.array(data['seeds'],copy=True),
         difficulties=difficulties,on_policy=on_policy,level_seeds=seeds.astype(np.int64),

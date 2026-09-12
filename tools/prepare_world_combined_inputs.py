@@ -9,6 +9,8 @@ shard's small proof arrays agree.
 
 from __future__ import annotations
 
+from pebby.ls20.provenance import metadata_difficulty_version
+
 import argparse
 import hashlib
 import json
@@ -244,7 +246,15 @@ def bank_index_for_snapshot(bank_rows: list[dict[str, Any]], first_seed: int) ->
     raise PreparationError(f"snapshot first seed {first_seed} absent from final bank")
 
 
+def require_frozen_legacy_bank(rows):
+    if metadata_difficulty_version({'levels': rows}):
+        raise PreparationError('this frozen old-plus-extended aggregate requires legacy five-tier banks; '
+                               'prepare calibrated shards separately with tools/merge_world_data.py '
+                               '--inputs SHARD... --validity AUDIT --out OUTPUT --split train|validation')
+
+
 def validate_bank(rows: list[dict[str, Any]], split: str) -> tuple[set[int], set[str]]:
+    require_frozen_legacy_bank(rows)
     if len(rows) != TARGETS[split]:
         raise PreparationError(f"{split} extended bank has {len(rows)} rows; need {TARGETS[split]}")
     seeds: set[int] = set()
@@ -281,6 +291,7 @@ def old_level_sets() -> tuple[dict[str, set[int]], dict[str, set[str]], dict[str
     old_hashes: dict[str, set[str]] = {}
     for split in SPLITS:
         bank_rows = read_jsonl(OLD_BANK[split])
+        require_frozen_legacy_bank(bank_rows)
         bank_seeds = {int(row["seed"]) for row in bank_rows}
         bank_hashes = {gameplay_hash(row) for row in bank_rows}
         with np.load(OLD_NPZ[split], allow_pickle=False) as archive:

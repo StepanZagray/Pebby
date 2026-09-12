@@ -20,6 +20,29 @@ def coverage_data(seeds=(10, 10, 20, 20), wins=(True, False, False, True), termi
             "meta": {"levels": metadata_wins or []}}
 
 
+class VerifiedProvenanceTests(unittest.TestCase):
+    def data(self, **changes):
+        proof = {"seed": 10, "context_index": 3, "context_engine_verified": True,
+                 "search_truncated": False}
+        proof.update(changes)
+        return {"seeds": np.array([10]), "meta": {"source": "generated_only",
+                "oracle_search": "complete_only", "levels": [proof]}}
+
+    def test_explicit_boolean_complete_proof_is_accepted(self):
+        train.require_verified_data(self.data())
+
+    def test_missing_or_nonboolean_proof_flags_are_rejected(self):
+        for field in ("context_engine_verified", "search_truncated"):
+            for value in (None, "false", "true", 0, 1):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, "untruncated contextual"):
+                        train.require_verified_data(self.data(**{field: value}))
+            data = self.data()
+            del data["meta"]["levels"][0][field]
+            with self.subTest(missing=field), self.assertRaisesRegex(ValueError, "untruncated contextual"):
+                train.require_verified_data(data)
+
+
 class WinningCoverageTests(unittest.TestCase):
     def test_actual_winning_successor_covers_every_seed(self):
         train.require_winning_coverage(coverage_data(), "train")
@@ -42,10 +65,10 @@ class WinningCoverageTests(unittest.TestCase):
 
 
 class CurriculumScheduleTests(unittest.TestCase):
-    def test_parser_defaults_preserve_existing_schedule(self):
+    def test_parser_defaults_select_schedule_from_data_version(self):
         args = train.build_parser().parse_args(["--train", "train.npz"])
-        self.assertEqual(tuple(args.curriculum_start), DEFAULT_START)
-        self.assertEqual(tuple(args.curriculum_end), DEFAULT_END)
+        self.assertIsNone(args.curriculum_start)
+        self.assertIsNone(args.curriculum_end)
         self.assertFalse(args.require_winning_coverage)
         self.assertFalse(args.state_recall)
         self.assertFalse(args.grounding)

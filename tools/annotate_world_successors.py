@@ -6,6 +6,8 @@ are streamed in small row chunks; worker IPC carries hashes and labels, not
 images. A complete contextual oracle and actual engine WIN are still required
 for every level. No official level is loaded.
 """
+from pebby.ls20.provenance import generated_context, validate_difficulty
+
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -81,7 +83,7 @@ def source_fingerprints(path, chunk_rows=128):
 def recollect(task):
     spec, schema, samples, epsilon, coverage, history = task
     rows, proof = collect_level(spec, history=history, samples=samples, epsilon=epsilon,
-                                coverage=coverage, context_index=int(spec['seed']) % 7)
+                                coverage=coverage, context_index=generated_context(spec))
     if proof.get('excluded') or not proof.get('context_engine_verified'):
         raise ValueError(f"seed {spec['seed']} failed replay: {proof}")
     fingerprints = []

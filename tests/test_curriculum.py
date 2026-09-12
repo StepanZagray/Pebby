@@ -10,9 +10,9 @@ import numpy as np
 
 from pebby.ls20 import names, rails
 from pebby.ls20.bank import load, save
-from pebby.ls20.curriculum import DIFFICULTIES, _verify, generate_level
+from pebby.ls20.curriculum import LEGACY_DIFFICULTIES as DIFFICULTIES, _verify, generate_legacy_level as generate_level
 from pebby.ls20.env import Ls20Env, Ls20Scenario
-from pebby.ls20.generate import _level_data, build_level, generate_level as original_generate
+from pebby.ls20.generate import _level_data, build_level, generate_legacy_level as original_generate
 from pebby.ls20.layout import extract
 from pebby.ls20.plan import Oracle
 

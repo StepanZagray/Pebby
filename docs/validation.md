@@ -10,9 +10,9 @@ the generator, the planner or the agent, which have their own tests in
 ## Automated checks
 
 `uv run python -m unittest tests.test_serve tests.test_inference`:
-**32 tests, all passing, 11 s.**
+**40 tests, all passing, 7 s.**
 
-- `tests/test_serve.py` (14 tests) starts a real server on port 0 in a thread
+- `tests/test_serve.py` (21 tests) starts a real server on port 0 in a thread
   and drives it over a socket: `/health`, the HostAI manifest, every operation
   on both `/predict` and `/hostai/infer` compared against the engine's own
   answer, `Cache-Control: no-store` everywhere, 415 for four wrong content
@@ -23,7 +23,7 @@ the generator, the planner or the agent, which have their own tests in
   the no-inline-script rule, and a traversal matrix against a temporary UI
   directory (dot segments, a symlink escaping the root, a hidden file, a
   non-whitelisted extension, directory paths).
-- `tests/test_inference.py` (18 tests) covers the engine directly: the palette
+- `tests/test_inference.py` (19 tests) covers the engine directly: the palette
   against the 16 ARC-AGI-3 colours written out literally, the whole `info`
   contract, statelessness under interleaved levels, 64x64 frames of indices
   0..15, the shipped level-1 solution, a generated level through
@@ -100,17 +100,32 @@ the test ports, and that both temporary directories were removed.
 ### What the browser tests check
 
 `tests/ui_viewer.cjs` — the whole viewer, in one pass, **passing** in the
-isolated Chromium described above:
+isolated Chromium described above (re-measured 2026-09-12 17:55 against the
+single Level panel and the next-level card, through
+`tools/verify_bank_viewer.py --test ui_viewer.cjs`; report, logs and screenshots
+in `artifacts/ui-level-panel/viewer/`):
 
-- startup reports its transport and model, and lands on generated seed 7 at
-  difficulty 3 with an empty history and a 64x64 canvas;
+- startup reports its transport and model, the tier menu reads Tier 1 to Tier 7,
+  and asking for generated seed 7 at tier 3 lands there with an empty
+  history and a 64x64 canvas;
+- the three sources share one panel and only one of them is on show: choosing
+  Shipped puts the Generate pane away, and choosing Generate brings it back;
 - the anatomy panel is checked field by field against the spec the server
-  returns for the same seed — seed, difficulty, optimal actions, wall count,
+  returns for the same seed — seed, tier, optimal actions, wall count,
   step budget, fog — plus the goal, cycler and launcher counts, so the panel
   cannot drift from the level it claims to describe;
 - the overlays put ink on the overlay canvas and take it away again: features
   alone draw, unchecking clears to zero lit pixels, the lattice draws on its
   own, and features on top of the lattice strictly increase the ink;
+- the seed box states an intent and nothing more: the die beside it fills in a
+  random seed without loading anything, a changed tier does not load
+  anything either, and both raise the "inputs changed" hint until "Generate"
+  fetches exactly what is in the boxes; the die and "Generate" together are the
+  random-level path, and the level that arrives is the seed the die drew;
+- a request in flight is reported rather than greyed out: with the response held
+  back deliberately, the Level panel carries a "generating" marker naming the
+  work it was asked for and a spinner on the button that was pressed, its fields
+  stay at full opacity and readable, and both retire with the request;
 - seed stepping moves to seed 8 and back, and a new level starts empty;
 - arrow keys, the d-pad, undo and reset, with undo checked against a direct API
   replay of the same prefix rather than against an assumed inverse move;
@@ -118,21 +133,54 @@ isolated Chromium described above:
 - **the stored solution finishes the level** — "Jump to end" reaches the
   `Completed` state, which is the generator's completability proof replayed in
   the browser;
+- a finished run announces itself over the board: the finish card names the
+  state and the action count, its first button offers the level after this one,
+  the board frame carries the win colour, the card can be dismissed while the
+  frame stays, and loading another level clears both;
 - the route overlay replays every prefix, caches them, draws a path, and a
   cached scrub step is checked against the engine replaying that same prefix;
 - a shipped level loads and says plainly that it carries no stored solution,
   with the scrubber and its buttons disabled;
-- a rejected seed is reported without destroying the loaded level, and any
-  working request retires the error;
+- a rejected seed is reported in the panel's one error slot without destroying
+  the loaded level, and any working request retires the error;
+- the finish card leads on rather than only back: on a won generated level it
+  reads "Next level", pressing it loads seed + 1 at the same tier with an empty
+  history and retires the card, and Enter on the card does the same;
 - the board stays square and fits 1280x800, there is no horizontal overflow at
   390px, and the d-pad stays tappable there;
 - the page raises no uncaught errors;
 - finally, a second page is loaded with a **stand-in `window.hostai` injected**,
   and the UI must prefer it: the transport reads "HostAI bridge", `ready()` is
-  awaited before any inference, both `info` and the first level travel over the
-  bridge, and a move still lands. See the limits on this below.
+  awaited before any inference, the entire opening screen arrives over the bridge
+  in a single `boot` call — info, the bank catalogue, the first page of rows and
+  that page's first level — and a move still lands. See the limits on this below.
 
-It requires `playwright-core` and explicit `PEBBY_TEST_CDP` and
+`tests/ui_bank_viewer.cjs` — the bank source, **passing** in the same harness
+(measured 2026-09-12 17:57; evidence in `artifacts/ui-level-panel/bank/`). It
+plays one accepted row from each of the seven tiers in both splits by its stored
+route — 14 levels, each checked against the row the server returns for that id —
+walks pagination and the split and tier filters without disturbing the board,
+holds a `bank_levels` response back to watch the Level panel report the work,
+drives a failed catalogue and an empty filtered page into the panel's one error
+slot and recovers from both, proves the finish card walks the listing (a
+completed row offers the one after it, and taking the offer moves the panel's
+own selection with it), checks 320, 768, 1024 and 1440 px for horizontal
+overflow, and asserts that browsing accepted levels never issues a `generate`
+request.
+
+`tools/verify_bank_viewer.py` owns the process boundary for both suites and is
+the one-command route: it starts the capability-free Sway copy on the headless
+pixman backend inside bubblewrap, a disposable loopback server on a port it
+reserves itself, and Chromium in its own namespace; it writes the isolation
+proof and teardown check into a JSON report, and kills only the PIDs it started.
+It never touches a running application server.
+
+```
+uv run python tools/verify_bank_viewer.py --test ui_viewer.cjs --evidence artifacts/ui-level-panel/viewer
+uv run python tools/verify_bank_viewer.py --test ui_bank_viewer.cjs --evidence artifacts/ui-level-panel/bank
+```
+
+Driving a suite by hand instead requires `playwright-core` and explicit `PEBBY_TEST_CDP` and
 `PEBBY_TEST_ORIGIN` pointing at a dedicated browser and server.
 `PEBBY_PLAYWRIGHT` names an external `playwright-core` install and
 `PEBBY_SCREENSHOT_DIR` saves the evidence images. **The temporary
@@ -227,14 +275,15 @@ re-measuring if either changes.
 ## Screenshots
 
 All captured in the isolated Chromium described above, by `tests/ui_viewer.cjs`
-when `PEBBY_SCREENSHOT_DIR` is set.
+when `PEBBY_SCREENSHOT_DIR` is set, and re-captured from the 2026-09-12 17:55
+run of the single Level panel.
 
-- [Desktop](../artifacts/viewer-desktop.png) — generated seed 11 at difficulty 3
+- [Desktop](../artifacts/viewer-desktop.png) — generated seed 11 at tier 3
   with the feature overlay on: the start ring, the goal diamond, cyclers by
   silhouette, and the launcher arrow pointing the way it flings.
-- [Route](../artifacts/viewer-route.png) — seed 7 scrubbed to action 16 of 33.
+- [Route](../artifacts/viewer-route.png) — seed 7 scrubbed to action 15 of 31.
   The walked part of the solution is drawn bright, the rest dim.
 - [Solved](../artifacts/viewer-solved.png) — the same level after "Jump to end":
-  33 actions, `Completed`.
+  31 actions, `Completed`, with the finish card offering the next level.
 - [Dark theme](../artifacts/viewer-dark.png).
 - [Mobile](../artifacts/viewer-mobile.png) — 390x844.

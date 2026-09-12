@@ -8,11 +8,13 @@ dependencies = [
     "numpy>=2,<3",
     "arcengine>=0.9.3",
     "model-microscope",
+    "hostai==0.1.0",
 ]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 model-microscope = { path = "vendor/model_microscope-0.1.3-py3-none-any.whl" }
+hostai = { path = "vendor/hostai-0.1.0-py3-none-any.whl" }
 
 [[tool.uv.index]]
 name = "pytorch-cu130"

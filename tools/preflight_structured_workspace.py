@@ -1,4 +1,6 @@
 """Disposable real-optimizer capacity/throughput probe for spatial readouts."""
+from pebby.ls20.provenance import require_legacy_experiment
+
 import argparse
 import gc
 import json
@@ -47,6 +49,7 @@ def load_inputs():
         ('data/structured-field-additional-state-16384/train', 'data/structured-policy-imagined-additional-local-h4-400'),
     ]:
         data, manifest = load_policy_cache(directory, 'train')
+        require_legacy_experiment(manifest)
         check_policy_encoder(manifest['field_encoder'], policy, True)
         data['imagined_fields'], hashes = load_imagined_cache(imagined, 'train', directory, data, manifest, policy)
         sources.update(hashes)

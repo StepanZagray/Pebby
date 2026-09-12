@@ -472,6 +472,10 @@ class WorldModelTests(unittest.TestCase):
             np.savez(root / "truncated.npz", **truncated)
             flags = ["--epochs", "2", "--batch-size", "8", "--device", "cpu", "--seed", "0",
                      "--checkpoint-out", str(root / "out" / "world.pt"), "--report-out", str(root / "report.json")]
+            torch.manual_seed(0)
+            initial_hash = trainer.initial_state_sha256(make_model())
+            flags += ['--require-fresh-initialization','--expected-initial-state-sha256',initial_hash,
+                      '--temporal-backend','math']
             for key, value in TINY.items():
                 flags += [f"--{key.replace('_', '-')}", str(value)]
             buffer = io.StringIO()
@@ -496,6 +500,14 @@ class WorldModelTests(unittest.TestCase):
             model, checkpoint = wm.load_world_checkpoint(root / "out" / "world.pt")
             self.assertEqual(checkpoint["best_epoch"], report["best"]["epoch"])
             self.assertEqual(checkpoint["config"], report["config"])
+            self.assertEqual(checkpoint['initialization'],report['initialization'])
+            self.assertEqual(checkpoint['initialization']['kind'],'random')
+            self.assertEqual(checkpoint['initialization']['weights_sha256'],initial_hash)
+            self.assertEqual(checkpoint['execution']['temporal_backend'],'math')
+            with redirect_stdout(io.StringIO()),redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    trainer.main(['--train',str(root/'train.npz'),*flags,
+                                  '--expected-initial-state-sha256','0'*64])
             with torch.inference_mode():
                 self.assertEqual(tuple(model(torch.from_numpy(train["frames"][:2])).shape), (2, 4))
             for name, extra in (("overlap", ["--validation", str(root / "overlap.npz")]),

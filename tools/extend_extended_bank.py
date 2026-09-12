@@ -71,6 +71,7 @@ def check_gate(gate_path, prefixes):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--legacy", action="store_true", help="Explicit extension of historical five-tier banks")
     parser.add_argument('--quality-profile', choices=('learning', 'challenge'), default='learning')
     parser.add_argument('--train-count', type=int, default=10000)
     parser.add_argument('--validation-count', type=int, default=2000)
@@ -85,6 +86,8 @@ def main(argv=None):
     parser.add_argument('--existing-banks', nargs='+', default=['data/ls20-verified-train.jsonl',
                         'data/ls20-verified-validation.jsonl'])
     args = parser.parse_args(argv)
+    if not args.legacy:
+        parser.error("historical bank extension requires --legacy; use regenerate_mechanism_banks for seven-tier generation")
     if min(args.train_count, args.validation_count, args.attempts, args.progress_every) < 1:
         parser.error('counts, attempts and progress interval must be positive')
     if args.attempts != 16 or args.search_limit != 600000:
@@ -184,7 +187,7 @@ def main(argv=None):
                         raise ValueError(f'{split}: seed collision {seed}')
                     difficulty = len(rows[split]) % 5 + 1
                     attempted += 1
-                    accepted, excluded = extended.generate_level(seed,difficulty,args.attempts,args.search_limit,args.quality_profile)
+                    accepted, excluded = extended.generate_legacy_level(seed,difficulty,args.attempts,args.search_limit,args.quality_profile)
                     reasons.update(excluded)
                     drafts += sum(excluded.values()) + int(accepted is not None)
                     if accepted is None:

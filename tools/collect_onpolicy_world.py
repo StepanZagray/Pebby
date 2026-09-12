@@ -1,4 +1,6 @@
 """Bounded generated-training-only DAgger pilot; policy choices see public H8 only."""
+from pebby.ls20.provenance import generated_context, validate_difficulty
+
 import argparse
 from collections import Counter
 import json
@@ -103,7 +105,7 @@ def select(path, count, rng_seed, allowed=None):
     by_seed = {int(s['seed']): s for s in specs}
     if len(by_seed) != len(specs):
         raise ValueError('duplicate source seeds')
-    eligible = {seed: s for seed, s in by_seed.items() if (allowed is None or seed in allowed) and not (seed % 7 == 0 and s.get('launchers'))}
+    eligible = {seed: s for seed, s in by_seed.items() if (allowed is None or seed in allowed) and not (generated_context(s) == 0 and s.get('launchers'))}
     return [eligible[seed] for seed in stratified_seeds(eligible, count, rng_seed)]
 
 

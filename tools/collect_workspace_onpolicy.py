@@ -13,6 +13,8 @@ run; this module does not start collection during import or tests.
 
 from __future__ import annotations
 
+from pebby.ls20.provenance import generated_context, validate_difficulty
+
 import argparse
 from collections import Counter
 import json
@@ -69,13 +71,12 @@ def _validate_bank(path: Path, values):
         seed = spec.get("seed")
         if type(seed) is not int or not 0 <= seed < 1_000_000:
             raise ValueError(f"{path} contains a non-TRAIN seed")
-        if type(spec.get("difficulty")) is not int or not 1 <= spec["difficulty"] <= 5:
-            raise ValueError(f"{path} contains a level without difficulty 1..5")
+        validate_difficulty(spec)
         if spec.get("official_inputs_used") is True:
             raise ValueError(f"{path} is marked as using official inputs")
         if (spec.get("context_engine_verified") is not True
                 or spec.get("search_truncated") is True
-                or spec.get("training_context_index", seed % 7) != seed % 7):
+                or spec.get("training_context_index", generated_context(spec)) != generated_context(spec)):
             raise ValueError(f"{path} contains an unverified or mismatched contextual proof")
         seeds.append(seed)
     if len(set(seeds)) != len(seeds):

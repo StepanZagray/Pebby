@@ -24,7 +24,7 @@ class MixedRolloutDraftTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(1)
-        generated = generate.generate_level(0, 1)
+        generated = generate.generate_legacy_level(0, 1)
         env, oracle, proof = world_data.verified_context(generated, context_index=3)
         assert env is not None and proof['context_engine_verified']
         route = oracle.solution()

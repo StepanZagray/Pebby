@@ -3,6 +3,8 @@
 This is a separate cache, never a concatenation of duplicate level IDs. Encoder
 chunks are independent of the eventual policy's 1024-distinct-level batch.
 """
+from pebby.ls20.provenance import metadata_difficulty_stages, cache_difficulty_metadata
+
 import argparse
 import json
 import os
@@ -163,7 +165,7 @@ def build(data, source, parent, output, assembler, *, seed=43, batch_size=32,
                     raise ValueError(f'nonfinite output: {path.name}')
             inventory[path.stem] = {'shape':list(array.shape),'dtype':str(array.dtype),'sha256':digest(path)}
         checked_hashes(hashes)
-        result = {'format':FORMAT,'status':'complete','source':'generated_only','split':'train',
+        result = {**cache_difficulty_metadata(data['meta'], arrays['seeds']), 'format':FORMAT,'status':'complete','source':'generated_only','split':'train',
                   'source_path':str(source),'source_sha256':previous['source_sha256'],
                   'builder_sha256':digest(__file__),'source_hashes':hashes,
                   'field_encoder':previous['field_encoder'],'arrays':inventory,'selected_levels':n,
@@ -173,7 +175,7 @@ def build(data, source, parent, output, assembler, *, seed=43, batch_size=32,
                        'identical_ordered_seeds':True,'different_source_rows':int((~singleton).sum()),
                        'singleton_seeds':list(map(int,arrays['seeds'][singleton]))},
                   'selection':{'seed':seed,'method':'same ordered TRAIN levels; uniform different source row per level; retain original row only for explicit singleton',
-                       'difficulty_counts':{str(d):int((arrays['difficulties']==d).sum()) for d in range(1,6)},
+                       'difficulty_counts':{str(d):int((arrays['difficulties']==d).sum()) for d in metadata_difficulty_stages(data['meta'])},
                        'event_enrichment':False,'validation_selection':'none; existing validation unchanged'},
                   'encoding_precision':{'device':device,'compute_dtype':'float32','cache_dtype':'float16',
                        'autocast':False,'tf32':False,'max_encoder_batch':max_encoder_batch},

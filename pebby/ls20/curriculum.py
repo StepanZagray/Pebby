@@ -1,4 +1,9 @@
-"""Small generated-only mechanic lessons, exhaustively verified before release.
+"""Seven-tier generated lessons, plus explicitly retired legacy diagnostic fixtures.
+
+Public generate_level uses aggregate official reference calibration without
+copying shipped geometry or routes; --legacy/generate_legacy_level
+retain the historical compact drafts below, including their old quality floors.
+The following description concerns only that legacy implementation:
 
 This extends the v2 spec with ``curriculum_version`` and optional ``rails``.
 No shipped layouts, routes or observations inform the drafts. Rooms, corridors,
@@ -21,7 +26,8 @@ from .layout import extract
 from .plan import Oracle, simulate
 
 CURRICULUM_VERSION = 2
-DIFFICULTIES = (1, 2, 3, 4, 5)
+LEGACY_DIFFICULTIES = (1, 2, 3, 4, 5)
+from .reference_profiles import DIFFICULTIES
 DEFAULT_LIMIT = 120_000
 DEFAULT_ATTEMPTS = 24
 KINDS = ("shape", "color", "rotation")
@@ -181,11 +187,11 @@ def _verify(spec, search_limit, min_slack):
             "solution_mechanics": used, "engine_verified": True}
 
 
-def generate_level(seed, difficulty=1, attempts=DEFAULT_ATTEMPTS, min_slack=3,
+def generate_legacy_level(seed, difficulty=1, attempts=DEFAULT_ATTEMPTS, min_slack=3,
                    search_limit=DEFAULT_LIMIT):
     """Deterministic complete-search lesson, or an explicit bounded failure."""
-    if difficulty not in DIFFICULTIES:
-        raise ValueError(f"difficulty must be one of {DIFFICULTIES}")
+    if difficulty not in LEGACY_DIFFICULTIES:
+        raise ValueError(f"legacy difficulty must be one of {LEGACY_DIFFICULTIES}")
     if attempts < 1 or search_limit < 1 or min_slack < 0:
         raise ValueError("attempts/search_limit must be positive and min_slack nonnegative")
     rng = random.Random(f"ls20-curriculum:{CURRICULUM_VERSION}:{seed}:{difficulty}")
@@ -202,28 +208,47 @@ def generate_level(seed, difficulty=1, attempts=DEFAULT_ATTEMPTS, min_slack=3,
                        f"and {search_limit} states per search")
 
 
+def generate_level(seed, difficulty=1, attempts=400, min_slack=None, search_limit=None, **kwargs):
+    """Default seven-tier generator; old compact lessons are explicit legacy fixtures."""
+    from .reference_generator import generate_level as reference_level
+    return reference_level(seed, difficulty, attempts=attempts, min_slack=min_slack,
+                           search_limit=search_limit, **kwargs)
+
+
 def main():
     from .bank import SPLIT_SEEDS, save
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--legacy", action="store_true", help="Explicit historical five-tier diagnostic generation")
     parser.add_argument("--levels", type=int, default=25)
     parser.add_argument("--split", choices=tuple(SPLIT_SEEDS), default="train")
     parser.add_argument("--difficulties", nargs="+", type=int, choices=DIFFICULTIES,
-                        default=list(DIFFICULTIES))
+                        default=None)
     parser.add_argument("--seed", type=int, default=0, help="Offset within the split's seed range")
-    parser.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
-    parser.add_argument("--search-limit", type=int, default=DEFAULT_LIMIT)
-    parser.add_argument("--min-slack", type=int, default=3)
+    parser.add_argument("--attempts", type=int, default=None)
+    parser.add_argument("--search-limit", type=int, default=None)
+    parser.add_argument("--min-slack", type=int, default=None)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
+    if args.difficulties is None:
+        args.difficulties = list(LEGACY_DIFFICULTIES if args.legacy else DIFFICULTIES)
+    if args.legacy and any(d not in LEGACY_DIFFICULTIES for d in args.difficulties):
+        parser.error('legacy difficulty must be 1..5')
+    if args.attempts is None:
+        args.attempts = DEFAULT_ATTEMPTS if args.legacy else 400
+    if args.legacy:
+        args.search_limit = DEFAULT_LIMIT if args.search_limit is None else args.search_limit
+        args.min_slack = 3 if args.min_slack is None else args.min_slack
+    factory = generate_legacy_level if args.legacy else generate_level
     if args.levels < 1 or args.seed < 0 or args.seed + args.levels > 1_000_000:
         parser.error("levels and seed must stay inside the selected million-seed split")
-    if args.attempts < 1 or args.search_limit < 1 or args.min_slack < 0:
+    if (args.attempts < 1 or (args.search_limit is not None and args.search_limit < 1)
+            or (args.min_slack is not None and args.min_slack < 0)):
         parser.error("attempts/search-limit must be positive; min-slack must be nonnegative")
     specs = []
     # Intentionally one CPU worker. Failure stops the bank; no silent seed skip.
     for i in range(args.levels):
-        spec = generate_level(SPLIT_SEEDS[args.split] + args.seed + i,
+        spec = factory(SPLIT_SEEDS[args.split] + args.seed + i,
                               args.difficulties[i % len(args.difficulties)],
                               args.attempts, args.min_slack, args.search_limit)
         specs.append(spec)

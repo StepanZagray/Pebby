@@ -14,7 +14,7 @@ from pebby.ls20.env import Ls20Env
 from pebby.ls20.generate import build_level
 from tests.test_policy_history import tiny_world, corridor
 from pebby.agent.world_data import collect_level
-from pebby.ls20.generate import generate_level
+from pebby.ls20.generate import generate_legacy_level as generate_level
 
 
 class WorldContractTests(unittest.TestCase):
@@ -96,7 +96,8 @@ class WorldContractTests(unittest.TestCase):
         self.assertLess(int((early['id'] >= 400).sum()), int((late['id'] >= 400).sum()))
 
     def test_training_refuses_missing_or_wrong_context_proofs(self):
-        proof = {'seed': 8, 'context_index': 1, 'context_engine_verified': True}
+        proof = {'seed': 8, 'context_index': 1, 'context_engine_verified': True,
+                 'search_truncated': False}
         data = {'seeds': np.array([8, 8]), 'meta': {'source': 'generated_only',
                 'oracle_search': 'complete_only', 'levels': [proof]}}
         train.require_verified_data(data)

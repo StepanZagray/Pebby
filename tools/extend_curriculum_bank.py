@@ -118,10 +118,10 @@ def prepare_bank(source, target, total):
 
 
 def generate_job(job):
-    from pebby.ls20.curriculum import generate_level
+    from pebby.ls20.curriculum import generate_legacy_level
 
     seed, difficulty = job
-    return generate_level(seed, difficulty)
+    return generate_legacy_level(seed, difficulty)
 
 
 def extend_bank(source, target, total, *, workers=2, generator=None, progress_every=25):
@@ -188,6 +188,7 @@ def _bounded_results(pool, make, jobs, workers):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--legacy", action="store_true", help="Explicit extension of historical five-tier banks")
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--total", type=int, required=True)
@@ -196,6 +197,8 @@ def main():
     parser.add_argument("--planner-source", type=Path,
                         help="Load an exact reviewed source snapshot; requires --planner-sha256")
     args = parser.parse_args()
+    if not args.legacy:
+        parser.error("historical bank extension requires --legacy; use regenerate_mechanism_banks for seven-tier generation")
     if args.total < 1:
         parser.error("total must be positive")
     if args.planner_source and not args.planner_sha256:

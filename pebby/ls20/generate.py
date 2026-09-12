@@ -43,14 +43,15 @@ LAUNCHER = {(0, -1): "lujfinsby_t", (0, 1): "kapcaakvb_b",
 # the layer-0 tie, so the one lattice cell it would cover is kept solid.
 RESERVED = {(1, 10)}
 
-DIFFICULTY = {
+LEGACY_DIFFICULTY = {
     1: {"density": .10, "attributes": 1, "goals": 1, "refills": 0, "cost": 1, "distractors": 0, "launchers": 0},
     2: {"density": .16, "attributes": 2, "goals": 1, "refills": 0, "cost": 1, "distractors": 1, "launchers": 0},
     3: {"density": .22, "attributes": 3, "goals": 1, "refills": 0, "cost": 1, "distractors": 1, "launchers": 1},
     4: {"density": .22, "attributes": 3, "goals": 1, "refills": 2, "cost": 2, "distractors": 2, "launchers": 1},
     5: {"density": .18, "attributes": 3, "goals": 2, "refills": 2, "cost": 1, "distractors": 2, "launchers": 2},
 }
-DIFFICULTIES = tuple(sorted(DIFFICULTY))
+LEGACY_DIFFICULTIES = tuple(sorted(LEGACY_DIFFICULTY))
+from .reference_profiles import DIFFICULTIES, PROFILES as DIFFICULTY
 
 _ATTRIBUTE_SIZES = {"shape": names.SHAPE_COUNT, "color": names.COLOR_COUNT,
                     "rotation": names.ROTATION_COUNT}
@@ -75,7 +76,7 @@ def _connected(free, start):
 
 def _draft(rng, difficulty):
     """One candidate level spec. May well be unsolvable; the caller checks."""
-    settings = DIFFICULTY[difficulty]
+    settings = LEGACY_DIFFICULTY[difficulty]
     cells = _interior()
     free = {cell for cell in cells if rng.random() >= settings["density"]}
     if not free:
@@ -325,13 +326,13 @@ def _verify(spec, min_slack, search_limit=600_000):
     return spec
 
 
-def generate_level(seed, difficulty=1, attempts=400, min_slack=8):
+def generate_legacy_level(seed, difficulty=1, attempts=400, min_slack=8):
     """A completable level for `seed`, or raise if none was found.
 
     Deterministic: the same (seed, difficulty) always gives the same level.
     """
-    if difficulty not in DIFFICULTY:
-        raise ValueError(f"difficulty must be one of {DIFFICULTIES}")
+    if difficulty not in LEGACY_DIFFICULTY:
+        raise ValueError(f"legacy difficulty must be one of {LEGACY_DIFFICULTIES}")
     rng = random.Random((seed, difficulty).__hash__() ^ seed)
     for _ in range(attempts):
         spec = _draft(rng, difficulty)
@@ -342,6 +343,17 @@ def generate_level(seed, difficulty=1, attempts=400, min_slack=8):
         if verified is not None:
             return verified
     raise RuntimeError(f"no completable level for seed={seed} difficulty={difficulty}")
+
+
+def generate_level(seed, difficulty=1, attempts=400, min_slack=None, search_limit=None, **kwargs):
+    """Generate a seven-tier reference-profile lesson with its actual tier context.
+
+    Historical five-tier fixtures remain available through generate_legacy_level;
+    their seed-context and difficulty semantics are deliberately unchanged.
+    """
+    from .reference_generator import generate_level as reference_level
+    return reference_level(seed, difficulty, attempts=attempts, min_slack=min_slack,
+                           search_limit=search_limit, **kwargs)
 
 
 def generate_levels(seeds, difficulty=1, **kwargs):

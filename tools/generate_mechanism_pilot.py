@@ -31,7 +31,8 @@ def digest(path):
 
 
 def canonical(spec):
-    return hashlib.sha256(json.dumps({k:spec.get(k,[]) for k in FIELDS},sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    from pebby.ls20.extended_curriculum import gameplay_hash
+    return gameplay_hash(spec)
 
 
 def _long_route(rng, *, challenge=False):

@@ -3,6 +3,8 @@
 No architecture/objective change. Four actual/imagined action alternatives remain
 supervised training inputs; no playable inference interface is changed here.
 """
+from pebby.ls20.provenance import require_legacy_experiment
+
 import argparse
 import gc
 import hashlib
@@ -48,6 +50,7 @@ def verify_sources(sources):
 
 def validate_rows(data, manifest, base):
     """Validate the independent grouping/labels/proofs before sampling any row."""
+    require_legacy_experiment(manifest)
     n = manifest['rows']; levels = manifest['levels']
     if type(n) is not int or n < 1 or type(levels) is not int or levels < 1: raise ValueError('positive row/level counts required')
     shapes = {name: (n,) for name in ('seeds','difficulties','source_rows','on_policy','current_distance','steps','lives','optimal')}
@@ -125,6 +128,7 @@ def validate_rows(data, manifest, base):
 
 def load_trajectory(path, policy, base, warmstart, sources):
     path=Path(path);raw=(path/'manifest.json').read_bytes();manifest=json.loads(raw)
+    require_legacy_experiment(manifest)
     if (manifest.get('format')!=CACHE_FORMAT or manifest.get('status')!='complete'
             or manifest.get('source')!='generated_only' or manifest.get('split')!='train'
             or manifest.get('no_future_inputs_to_current_or_imagined_fields') is not True):

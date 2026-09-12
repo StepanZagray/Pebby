@@ -75,7 +75,7 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(SHIPPED_LEVELS, 7)
         self.assertEqual(info["max_actions"], MAX_ACTIONS)
         self.assertEqual(info["max_actions"], 2048)
-        self.assertEqual(info["difficulties"], [1, 2, 3, 4, 5])
+        self.assertEqual(info["difficulties"], [1, 2, 3, 4, 5, 6, 7])
         self.assertEqual(info["grid"], {"cols": 12, "rows": 12, "cell": 5,
                                         "x_origin": 4, "y_origin": 0, "frame_size": 64})
         self.assertEqual(info["triple"], {"shapes": 6, "colors": [12, 9, 14, 8],
@@ -137,7 +137,10 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(json.dumps(validate_level(reread)), json.dumps(level))
         solution = level["solution"]
         self.assertEqual(len(solution), level["optimal_actions"])
-        self.assertEqual(level['training_context_index'], level['seed'] % 7)
+        self.assertEqual(level['difficulty_version'], 'ls20-reference-v1')
+        self.assertEqual(level['training_context_index'], level['difficulty'] - 1)
+        with self.assertRaisesRegex(ValueError, 'context'):
+            validate_level({**level, 'training_context_index': (level['difficulty'] % 7)})
         status = self.dispatch({"op": "play", "level": reread, "actions": solution})["status"]
         self.assertEqual(status["state"], "WIN")
         self.assertTrue(status["won"])
@@ -147,7 +150,9 @@ class InferenceTests(unittest.TestCase):
                                         "actions": solution[:-1]})["status"]["won"])
 
     def test_hint_context_changes_the_oracle_cache_key(self):
-        level = self.dispatch(self.example('generate.json'))['level']
+        # Context-key regression uses an explicitly historical fixture; calibrated
+        # levels separately enforce the tier's single permitted context.
+        level = copy.deepcopy(self.spec)
         hint = {**level, 'training_context_index': 0, 'context_index': 0,
                 'verification_level_index': 0}
         later = {**level, 'training_context_index': 1, 'context_index': 1,
@@ -219,13 +224,13 @@ class InferenceTests(unittest.TestCase):
             ("seed too large", {"op": "generate", "seed": 0x100000000},
              "seed must be an integer between 0 and 4294967295."),
             ("difficulty zero", {"op": "generate", "difficulty": 0},
-             "difficulty must be one of [1, 2, 3, 4, 5]."),
+             "difficulty must be one of [1, 2, 3, 4, 5, 6, 7]."),
             ("difficulty too high", {"op": "generate", "difficulty": 9},
-             "difficulty must be one of [1, 2, 3, 4, 5]."),
+             "difficulty must be one of [1, 2, 3, 4, 5, 6, 7]."),
             ("difficulty a string", {"op": "generate", "difficulty": "1"},
-             "difficulty must be one of [1, 2, 3, 4, 5]."),
+             "difficulty must be one of [1, 2, 3, 4, 5, 6, 7]."),
             ("difficulty a bool", {"op": "generate", "difficulty": True},
-             "difficulty must be one of [1, 2, 3, 4, 5]."),
+             "difficulty must be one of [1, 2, 3, 4, 5, 6, 7]."),
             ("generate with extra field", {"op": "generate", "seed": 0, "difficulty": 1, "extra": 1},
              "Unknown operation or unexpected fields."),
             ("shipped without index", {"op": "shipped"}, "Unknown operation or unexpected fields."),

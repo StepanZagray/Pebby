@@ -41,10 +41,10 @@ def cases():
     if _cases is None:
         found = []
         for seed, difficulty in CURRICULUM_CASES:
-            spec = curriculum.generate_level(seed, difficulty)
+            spec = curriculum.generate_legacy_level(seed, difficulty)
             found.append((f"curriculum-{seed}-d{difficulty}", spec, spec["search_limit"]))
         for seed, difficulty in GENERATOR_CASES:
-            spec = generate.generate_level(seed, difficulty)
+            spec = generate.generate_legacy_level(seed, difficulty)
             found.append((f"generate-{seed}-d{difficulty}", spec, 600_000))
         _cases = [(name, spec, extract(Ls20Scenario(generate.build_level(spec), spec["seed"] % 7)), limit)
                   for name, spec, limit in found]
@@ -188,13 +188,13 @@ class FastPlannerTests(unittest.TestCase):
         reference_only = functools.partial(Oracle, engine="reference")
         for seed, difficulty in ((7, 3), (8, 4), (9, 5)):
             with self.subTest(source="curriculum", seed=seed):
-                expected = curriculum.generate_level(seed, difficulty)
+                expected = curriculum.generate_legacy_level(seed, difficulty)
                 with patch("pebby.ls20.curriculum.Oracle", reference_only):
-                    self.assertEqual(curriculum.generate_level(seed, difficulty), expected)
+                    self.assertEqual(curriculum.generate_legacy_level(seed, difficulty), expected)
         with self.subTest(source="generate", seed=11):
-            expected = generate.generate_level(11, 3)
+            expected = generate.generate_legacy_level(11, 3)
             with patch("pebby.ls20.generate.Oracle", reference_only):
-                self.assertEqual(generate.generate_level(11, 3), expected)
+                self.assertEqual(generate.generate_legacy_level(11, 3), expected)
 
     def test_auto_falls_back_to_reference_when_kernel_is_missing(self):
         name, spec, layout, limit = cases()[0]
@@ -258,7 +258,7 @@ def benchmark(out=None, repeats=5, curriculum_levels=20):
     seeds = [(seed, seed % 5 + 1) for seed in range(curriculum_levels)]
 
     def generate_all():
-        return [curriculum.generate_level(seed, difficulty) for seed, difficulty in seeds]
+        return [curriculum.generate_legacy_level(seed, difficulty) for seed, difficulty in seeds]
     with patch("pebby.ls20.curriculum.Oracle", functools.partial(Oracle, engine="reference")):
         before_specs, before = generate_all(), median_cpu(generate_all, 1)
     after_specs, after = generate_all(), median_cpu(generate_all, 1)

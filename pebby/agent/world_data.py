@@ -20,6 +20,8 @@ Three coverage modes share one row contract:
   Unreachable current states have optimal=0 and train dynamics/value only.
 """
 
+from ..ls20.provenance import generated_context, difficulty_provenance, difficulty_version, search_limit_for
+
 import argparse
 import copy
 from datetime import datetime, timezone
@@ -103,7 +105,9 @@ def verified_context(spec, context_index=None, search_limit=600_000):
     """Complete contextual oracle AND a winning real-engine replay, or refusal."""
     if spec.get("search_truncated"):
         return None, None, {"seed": spec["seed"], "excluded": "truncated source proof"}
-    context_index = spec["seed"] % 7 if context_index is None else context_index
+    context_index = generated_context(spec) if context_index is None else context_index
+    if difficulty_version(spec) and context_index != generated_context(spec):
+        raise ValueError("calibrated level context must equal difficulty - 1")
     # A context-zero launcher landing on a matching cycler can leave a hint
     # pending beyond perform_action. The next submitted action only clears that
     # animation. The logical oracle has no pending-hint state, so its distance
@@ -112,6 +116,7 @@ def verified_context(spec, context_index=None, search_limit=600_000):
     if context_index == 0 and spec.get("launchers"):
         return None, None, {"seed": spec["seed"], "excluded":
                            "context-zero launcher can leave pending hint outside oracle state"}
+    search_limit = search_limit_for(spec, search_limit)
     env = Ls20Scenario(build_level(spec), context_index)
     oracle = Oracle(extract(env), limit=search_limit)
     if oracle.truncated or not oracle.solvable:
@@ -126,9 +131,9 @@ def verified_context(spec, context_index=None, search_limit=600_000):
         result = replay.perform(action)
     if result is None or not result.won or replay.lives() != 3 or replay.levels_completed != 1:
         return None, None, {"seed": spec["seed"], "excluded": "contextual solution failed real-engine replay"}
-    return env, oracle, {"seed": spec["seed"], "context_index": context_index,
+    return env, oracle, {**difficulty_provenance(spec), "seed": spec["seed"], "context_index": context_index,
                         "context_engine_verified": True, "search_truncated": False,
-                        "context_optimal_actions": len(solution),
+                        "context_optimal_actions": len(solution), "search_limit": search_limit,
                         "oracle_backend": getattr(oracle, "engine", "reference")}
 
 

@@ -3,6 +3,8 @@
 Actual branch targets use H8 append/shift or life-reset histories. No labels
 enter current-field assembly. One current row per distinct generated level.
 """
+from pebby.ls20.provenance import metadata_difficulty_stages, cache_difficulty_metadata
+
 import argparse
 import hashlib
 import json
@@ -64,8 +66,9 @@ def select_rows(data, count, seed, split, include_life_loss_levels=False):
     available=np.unique(seeds);rng=np.random.default_rng(seed);selected=[]
     loss_rows=np.asarray(data['lost_life']).any(1)
     loss_levels=set(map(int,seeds[loss_rows])) if include_life_loss_levels else set()
-    for tier in range(1,6):
-        quota=count//5+int(tier<=count%5)
+    stages = metadata_difficulty_stages(data['meta'])
+    for tier in stages:
+        quota=count//len(stages)+int(tier<=count%len(stages))
         pool=[int(s) for s in available if difficulty[int(s)]==tier]
         if len(pool)<quota:raise ValueError(f'insufficient distinct levels at difficulty{tier}')
         forced=sorted(set(pool)&loss_levels)
@@ -159,12 +162,12 @@ def write_split(data,source_path,out,assembler,count,seed,split,assembler_proven
             array=np.load(path,mmap_mode='r',allow_pickle=False)
             inventory[path.stem]={'shape':list(array.shape),'dtype':str(array.dtype),'sha256':digest(path)}
         if digest(source_path)!=source_hash:raise ValueError('source changed while caching')
-        manifest={'format':FORMAT,'status':'complete','split':split,'source':'generated_only',
+        manifest={**cache_difficulty_metadata(data['meta'], arrays['seeds']), 'format':FORMAT,'status':'complete','split':split,'source':'generated_only',
                   'source_path':str(source_path),'source_sha256':source_hash,'builder_sha256':digest(__file__),
                   'field_encoder':assembler_provenance,'arrays':inventory,'selected_levels':count,
                   'encoding_precision':{'device':device,'compute_dtype':'float32','cache_dtype':'float16',
                                         'autocast':False,'tf32':False,'max_encoder_batch':max_encoder_batch},
-                  'selection':{'seed':seed,'difficulty_counts':{str(d):int((difficulties==d).sum()) for d in range(1,6)},
+                  'selection':{'seed':seed,'difficulty_counts':{str(d):int((difficulties==d).sum()) for d in metadata_difficulty_stages(data['meta'])},
                                'method':'include all life-loss levels within difficulty quotas and choose loss-containing row, remainder uniform' if include_life_loss_levels else 'uniform level within difficulty, then uniform source row per level',
                                'event_enrichment':include_life_loss_levels,
                                'available_life_loss_levels':len(set(map(int,np.asarray(data['seeds'])[np.asarray(data['lost_life']).any(1)]))),

@@ -3,6 +3,8 @@
 No training or official data. Encoder work is chunked, while SIGReg is computed
 once across the full selected level population. Terminal/reset clips are absent.
 """
+from pebby.ls20.provenance import metadata_difficulty_stages, cache_difficulty_metadata
+
 import argparse
 import json
 import os
@@ -29,8 +31,9 @@ def select_anchors(data, index, size, seed=42):
     if size > len(levels) or size < 2:
         raise ValueError('need at least two distinct eligible validation levels')
     difficulty = {int(row['seed']): int(row['difficulty']) for row in data['meta']['levels']}
-    groups = [levels[[difficulty[int(level)] == stage for level in levels]] for stage in range(1, 6)]
-    quotas = [size // 5 + int(stage < size % 5) for stage in range(5)]
+    groups = [levels[[difficulty[int(level)] == stage for level in levels]] for stage in metadata_difficulty_stages(data['meta'])]
+    stage_count = len(metadata_difficulty_stages(data['meta']))
+    quotas = [size // stage_count + int(stage < size % stage_count) for stage in range(stage_count)]
     if any(len(group) < count for group, count in zip(groups, quotas)):
         raise ValueError('insufficient validation difficulty coverage for balanced sample')
     chosen = np.concatenate([rng.choice(group, count, replace=False)

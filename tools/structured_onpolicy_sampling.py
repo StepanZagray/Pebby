@@ -9,6 +9,7 @@ the training reports distinguish the two sources. Legacy caches are unchanged.
 from dataclasses import dataclass
 
 import numpy as np
+from pebby.ls20.provenance import validate_row_difficulties
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,7 @@ class PairedRows:
 
 
 class PairedStateSampler:
-    def __init__(self, base_seeds, difficulties, trajectory_seeds, on_policy, *, auxiliary=None, auxiliary_fraction=.25):
+    def __init__(self, base_seeds, difficulties, trajectory_seeds, on_policy, *, auxiliary=None, auxiliary_fraction=.25, difficulty_metadata=None):
         self.seeds = np.asarray(base_seeds)
         self.difficulty = np.asarray(difficulties)
         visited = np.asarray(trajectory_seeds)
@@ -30,9 +31,9 @@ class PairedStateSampler:
                 or np.any((self.seeds < 0) | (self.seeds >= 1_000_000))):
             raise ValueError('distinct generated TRAIN base levels required')
         if (self.difficulty.shape != self.seeds.shape
-                or not np.issubdtype(self.difficulty.dtype, np.integer)
-                or np.any((self.difficulty < 1) | (self.difficulty > 5))):
-            raise ValueError('base difficulties must be integers1..5')
+                or not np.issubdtype(self.difficulty.dtype, np.integer)):
+            raise ValueError('base difficulties must be integer row labels')
+        self.difficulties = validate_row_difficulties(self.seeds, self.difficulty, difficulty_metadata or {})
         if (visited.ndim != 1 or not np.issubdtype(visited.dtype, np.integer)
                 or flags.shape != visited.shape or flags.dtype != np.bool_
                 or not flags.any()):

@@ -4,6 +4,8 @@ One spawn pool at a time; at most four workers. Each published NPZ is a complete
 mixed_failure/H8/base-16-row shard with route-proportional anchors and failure rows with all requested seeds and winning coverage.
 All four actual branches of every expanded state are checked against the Oracle.
 """
+from pebby.ls20.provenance import generated_context, row_contexts
+
 import argparse
 from collections import Counter
 import hashlib
@@ -115,7 +117,7 @@ def validate_arrays(arrays, specs):
         raise ContractMismatch('missing or malformed next_optimal labels')
     if arrays['frames'].shape[1:] != (8, 64, 64) or arrays['next_frames'].shape[1:] != (4, 64, 64):
         raise ContractMismatch('history or actual successor observation contract differs')
-    if not np.all(arrays['context_index'] == arrays['seeds'] % 7):
+    if not np.all(arrays['context_index'] == row_contexts(arrays['seeds'], arrays['meta']['levels'])):
         raise ContractMismatch('wrong per-row gameplay context')
     branches = sum(p['branch_verification']['branches'] for p in proofs)
     expansions = sum(p['branch_verification']['expansions'] for p in proofs)

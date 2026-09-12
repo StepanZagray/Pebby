@@ -12,7 +12,7 @@ from arcengine import GameState
 
 from pebby.agent import data, world_data
 from pebby.ls20 import generate, names
-from pebby.ls20.curriculum import generate_level as curriculum_level
+from pebby.ls20.curriculum import generate_legacy_level as curriculum_level
 from pebby.ls20.env import Ls20Scenario
 from pebby.ls20.layout import extract
 from pebby.ls20.plan import Oracle
@@ -64,7 +64,7 @@ def counted_performs(spec, **kwargs):
 class WorldDataTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.spec = generate.generate_level(0, 1)
+        cls.spec = generate.generate_legacy_level(0, 1)
 
     def test_context_preserves_later_level_rules_across_resets(self):
         for context in (0, 3, 6):
@@ -228,7 +228,7 @@ class WorldDataTests(unittest.TestCase):
         oracle.assert_not_called()
 
     def test_fast_clone_preserves_moving_cyclers_fog_and_refill_state(self):
-        from pebby.ls20.curriculum import generate_level
+        from pebby.ls20.curriculum import generate_legacy_level as generate_level
 
         for difficulty in (3, 4, 5):
             with self.subTest(difficulty=difficulty):

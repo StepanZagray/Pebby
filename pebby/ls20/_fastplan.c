@@ -153,8 +153,7 @@ static inline int advance(const Params *p, uint64_t state, int action, uint64_t 
 /* -- open-addressed hash set: packed state -> discovery index ---------------- */
 
 typedef struct {
-    uint64_t *keys;
-    int32_t *index;   /* -1 marks an empty slot */
+    int32_t *index;   /* -1 marks an empty slot; value indexes `states` */
     size_t capacity;  /* power of two */
     size_t used;
 } Table;
@@ -169,70 +168,58 @@ static inline size_t slot_of(uint64_t key, size_t capacity) {
 }
 
 static int table_init(Table *t, size_t capacity) {
-    t->keys = (uint64_t *)malloc(capacity * sizeof(uint64_t));
     t->index = (int32_t *)malloc(capacity * sizeof(int32_t));
-    if (!t->keys || !t->index) { free(t->keys); free(t->index); return -1; }
+    if (!t->index)
+        return -1;
     memset(t->index, 0xff, capacity * sizeof(int32_t));
     t->capacity = capacity;
     t->used = 0;
     return 0;
 }
 
-static int table_grow(Table *t) {
+static int table_grow(Table *t, const uint64_t *states) {
     Table bigger;
     if (table_init(&bigger, t->capacity * 2) != 0)
         return -1;
     for (size_t i = 0; i < t->capacity; i++) {
         if (t->index[i] < 0)
             continue;
-        size_t s = slot_of(t->keys[i], bigger.capacity);
+        int32_t index = t->index[i];
+        size_t s = slot_of(states[index], bigger.capacity);
         while (bigger.index[s] >= 0)
             s = (s + 1) & (bigger.capacity - 1);
-        bigger.keys[s] = t->keys[i];
-        bigger.index[s] = t->index[i];
+        bigger.index[s] = index;
     }
     bigger.used = t->used;
-    free(t->keys);
     free(t->index);
     *t = bigger;
     return 0;
 }
 
 /* Index of `key`, or -1 if absent. */
-static inline int32_t table_find(const Table *t, uint64_t key) {
+static inline int32_t table_find(const Table *t, const uint64_t *states, uint64_t key) {
     size_t s = slot_of(key, t->capacity);
     while (t->index[s] >= 0) {
-        if (t->keys[s] == key)
-            return t->index[s];
+        int32_t index = t->index[s];
+        if (states[index] == key)
+            return index;
         s = (s + 1) & (t->capacity - 1);
     }
     return -1;
 }
 
-static int table_insert(Table *t, uint64_t key, int32_t index) {
-    if ((t->used + 1) * 2 > t->capacity && table_grow(t) != 0)
+static int table_insert(Table *t, const uint64_t *states, uint64_t key, int32_t index) {
+    if ((t->used + 1) * 2 > t->capacity && table_grow(t, states) != 0)
         return -1;
     size_t s = slot_of(key, t->capacity);
     while (t->index[s] >= 0)
         s = (s + 1) & (t->capacity - 1);
-    t->keys[s] = key;
     t->index[s] = index;
     t->used++;
     return 0;
 }
 
-/* -- growable arrays --------------------------------------------------------- */
-
-#define GROW(ptr, type, count, capacity)                                         \
-    do {                                                                         \
-        if ((count) >= (capacity)) {                                             \
-            size_t bigger = (capacity) ? (capacity) * 2 : 1024;                  \
-            type *fresh = (type *)realloc((ptr), bigger * sizeof(type));         \
-            if (!fresh) goto fail;                                               \
-            (ptr) = fresh;                                                       \
-            (capacity) = bigger;                                                 \
-        }                                                                        \
-    } while (0)
+/* -- search workspaces ------------------------------------------------------- */
 
 /* `plan.Oracle._search`.
  *
@@ -249,32 +236,45 @@ int ls20_search(const Params *p, uint64_t start, int64_t limit,
                 uint64_t **out_states, int32_t **out_distance, int64_t *count,
                 int64_t *reachable, int32_t *truncated) {
     uint64_t *states = NULL;
-    int32_t *edge_src = NULL, *edge_dst = NULL, *offsets = NULL, *preds = NULL;
+    uint8_t *edge_counts = NULL;
+    int32_t *edge_dst = NULL, *offsets = NULL, *preds = NULL;
     int32_t *distance = NULL, *queue = NULL;
     uint64_t *result_states = NULL;
     int32_t *result_distance = NULL;
-    size_t state_count = 0, state_capacity = 0, edge_count = 0, edge_capacity = 0;
+    size_t state_count = 0, edge_count = 0;
+    size_t state_capacity, edge_capacity;
     Table table = {0};
     int stop = 0;
     size_t popped = 0;   /* how many queue entries the forward pass took out */
     *out_states = NULL; *out_distance = NULL; *count = 0; *reachable = 0; *truncated = 0;
 
-    if (table_init(&table, 1 << 12) != 0)
+    if (limit <= 0 || limit > (int64_t)(INT32_MAX / 4))
         return -1;
-    GROW(states, uint64_t, state_count, state_capacity);
+    state_capacity = (size_t)limit;
+    edge_capacity = state_capacity * 4;
+    states = (uint64_t *)malloc(state_capacity * sizeof(uint64_t));
+    edge_counts = (uint8_t *)malloc(state_capacity * sizeof(uint8_t));
+    edge_dst = (int32_t *)malloc(edge_capacity * sizeof(int32_t));
+    if (!states || !edge_counts || !edge_dst) goto fail;
+    if (table_init(&table, 1 << 12) != 0)
+        goto fail;
     states[state_count++] = start;
-    if (table_insert(&table, start, 0) != 0) goto fail;
+    if (table_insert(&table, states, start, 0) != 0) goto fail;
 
     for (size_t head = 0; head < state_count && !stop; head++) {
         uint64_t state = states[head];
+        size_t head_begin = edge_count;
         popped = head + 1;
-        if ((int)((state >> p->shift_goals) & (uint64_t)p->mask_goals) == p->mask_goals)
+        if ((int)((state >> p->shift_goals) & (uint64_t)p->mask_goals) == p->mask_goals) {
+            /* Won heads are popped but have an empty predecessor interval. */
+            edge_counts[head] = 0;
             continue;                  /* the level advances here; nothing follows */
+        }
         for (int action = 0; action < 4; action++) {
             uint64_t next;
             if (!advance(p, state, action, &next))
                 continue;
-            int32_t index = table_find(&table, next);
+            int32_t index = table_find(&table, states, next);
             if (index < 0) {
                 if ((int64_t)state_count >= limit) {
                     /* The reference clears its queue here, so won states still
@@ -283,47 +283,53 @@ int ls20_search(const Params *p, uint64_t start, int64_t limit,
                     stop = 1;
                     break;
                 }
+                if (state_count >= state_capacity)
+                    goto fail;
                 index = (int32_t)state_count;
-                GROW(states, uint64_t, state_count, state_capacity);
                 states[state_count++] = next;
-                if (table_insert(&table, next, index) != 0) goto fail;
+                if (table_insert(&table, states, next, index) != 0) goto fail;
             }
-            if (edge_count >= edge_capacity) {
-                size_t bigger = edge_capacity ? edge_capacity * 2 : 4096;
-                int32_t *src = (int32_t *)realloc(edge_src, bigger * sizeof(int32_t));
-                if (!src) goto fail;
-                edge_src = src;
-                int32_t *dst = (int32_t *)realloc(edge_dst, bigger * sizeof(int32_t));
-                if (!dst) goto fail;
-                edge_dst = dst;
-                edge_capacity = bigger;
-            }
-            edge_src[edge_count] = (int32_t)head;
-            edge_dst[edge_count] = index;
-            edge_count++;
+            if (edge_count >= edge_capacity)
+                goto fail;
+            edge_dst[edge_count++] = index;
         }
+        size_t outgoing = edge_count - head_begin;
+        if (outgoing > UINT8_MAX)
+            goto fail;
+        edge_counts[head] = (uint8_t)outgoing;
     }
-    free(table.keys); free(table.index); table.keys = NULL; table.index = NULL;
+    free(table.index); table.index = NULL;
 
     /* Predecessor lists in CSR form, keyed by successor. */
     offsets = (int32_t *)calloc(state_count + 1, sizeof(int32_t));
     preds = (int32_t *)malloc((edge_count ? edge_count : 1) * sizeof(int32_t));
-    distance = (int32_t *)malloc(state_count * sizeof(int32_t));
-    queue = (int32_t *)malloc(state_count * sizeof(int32_t));
-    if (!offsets || !preds || !distance || !queue) goto fail;
+    if (!offsets || !preds) goto fail;
     for (size_t e = 0; e < edge_count; e++)
         offsets[edge_dst[e] + 1]++;
     for (size_t i = 0; i < state_count; i++)
         offsets[i + 1] += offsets[i];
     {
-        int32_t *fill = (int32_t *)malloc((state_count + 1) * sizeof(int32_t));
-        if (!fill) goto fail;
-        memcpy(fill, offsets, (state_count + 1) * sizeof(int32_t));
-        for (size_t e = 0; e < edge_count; e++)
-            preds[fill[edge_dst[e]]++] = edge_src[e];
-        free(fill);
+        size_t begin = edge_count;
+        for (size_t head = popped; head-- > 0;) {
+            size_t count = (size_t)edge_counts[head];
+            if (count > begin) goto fail;
+            size_t first = begin - count;
+            for (size_t e = begin; e > first;) {
+                --e;
+                preds[--offsets[edge_dst[e] + 1]] = (int32_t)head;
+            }
+            begin = first;
+        }
+        if (begin != 0) goto fail;
+        for (size_t i = 0; i < state_count; i++)
+            offsets[i] = offsets[i + 1];
+        offsets[state_count] = (int32_t)edge_count;
     }
-    free(edge_src); free(edge_dst); edge_src = edge_dst = NULL;
+    free(edge_counts); edge_counts = NULL;
+    free(edge_dst); edge_dst = NULL;
+    distance = (int32_t *)malloc(state_count * sizeof(int32_t));
+    queue = (int32_t *)malloc(state_count * sizeof(int32_t));
+    if (!distance || !queue) goto fail;
 
     /* Reverse BFS from every won state the forward pass got round to popping. */
     size_t qhead = 0, qtail = 0, finite = 0;
@@ -348,6 +354,9 @@ int ls20_search(const Params *p, uint64_t start, int64_t limit,
         }
     }
 
+    free(preds); preds = NULL;
+    free(offsets); offsets = NULL;
+    free(queue); queue = NULL;
     result_states = (uint64_t *)malloc((finite ? finite : 1) * sizeof(uint64_t));
     result_distance = (int32_t *)malloc((finite ? finite : 1) * sizeof(int32_t));
     if (!result_states || !result_distance) goto fail;
@@ -361,7 +370,7 @@ int ls20_search(const Params *p, uint64_t start, int64_t limit,
             }
         }
     }
-    free(states); free(offsets); free(preds); free(distance); free(queue);
+    free(states); free(distance);
     *out_states = result_states;
     *out_distance = result_distance;
     *count = (int64_t)finite;
@@ -369,8 +378,8 @@ int ls20_search(const Params *p, uint64_t start, int64_t limit,
     return 0;
 
 fail:
-    free(table.keys); free(table.index);
-    free(states); free(edge_src); free(edge_dst); free(offsets); free(preds);
+    free(table.index);
+    free(states); free(edge_counts); free(edge_dst); free(offsets); free(preds);
     free(distance); free(queue); free(result_states); free(result_distance);
     *out_states = NULL; *out_distance = NULL; *count = 0; *reachable = 0; *truncated = 0;
     return -1;
@@ -381,5 +390,62 @@ void ls20_free(void *pointer) {
 }
 
 int ls20_abi_version(void) {
-    return 1;
+    return 2;
+}
+
+/*
+ * Compact read-only index for the result arrays returned by ls20_search.
+ *
+ * The search result itself is already in discovery order.  Keep those two
+ * native arrays and add only an open-addressed uint32-sized (int32_t) slot
+ * index so Python Mapping lookups do not expand every key/value into Python
+ * objects.  Positions are int32_t because the planner's accepted result
+ * count is bounded well below INT32_MAX; reject larger counts explicitly.
+ */
+int32_t *ls20_index_build(const uint64_t *keys, size_t count, size_t *out_capacity) {
+    if (!out_capacity)
+        return NULL;
+    *out_capacity = 0;
+    if (!keys || count == 0 || count > (size_t)INT32_MAX
+            || count > ((size_t)-1) / 2)
+        return NULL;
+
+    size_t capacity = 1;
+    size_t target = count * 2;  /* load factor is at most one half */
+    while (capacity < target) {
+        if (capacity > ((size_t)-1) / 2)
+            return NULL;
+        capacity <<= 1;
+    }
+    if (capacity > ((size_t)-1) / sizeof(int32_t))
+        return NULL;
+
+    int32_t *index = (int32_t *)malloc(capacity * sizeof(int32_t));
+    if (!index)
+        return NULL;
+    memset(index, 0xff, capacity * sizeof(int32_t));
+    for (size_t position = 0; position < count; position++) {
+        size_t slot = slot_of(keys[position], capacity);
+        while (index[slot] >= 0)
+            slot = (slot + 1) & (capacity - 1);
+        index[slot] = (int32_t)position;
+    }
+    *out_capacity = capacity;
+    return index;
+}
+
+int64_t ls20_index_lookup(const int32_t *index, size_t capacity,
+                          const uint64_t *keys, size_t count, uint64_t key) {
+    if (!index || !keys || capacity == 0 || count == 0)
+        return -1;
+    size_t slot = slot_of(key, capacity);
+    for (size_t probe = 0; probe < capacity; probe++) {
+        int32_t position = index[slot];
+        if (position < 0)
+            return -1;
+        if ((size_t)position < count && keys[position] == key)
+            return (int64_t)position;
+        slot = (slot + 1) & (capacity - 1);
+    }
+    return -1;
 }

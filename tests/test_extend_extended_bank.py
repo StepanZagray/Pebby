@@ -14,8 +14,8 @@ from tools import extend_extended_bank as bank
 class ExtendExtendedBankTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.train = extended.generate_level(20001, 1)[0]
-        cls.validation = extended.generate_level(1020001, 1)[0]
+        cls.train = extended.generate_legacy_level(20001, 1)[0]
+        cls.validation = extended.generate_legacy_level(1020001, 1)[0]
         assert cls.train and cls.validation
 
     def fixture(self, root):
@@ -49,7 +49,7 @@ class ExtendExtendedBankTests(unittest.TestCase):
             bank.check_prefix([moved], 'train')
 
     def test_profile_floor_is_enforced_without_silently_mixing_profiles(self):
-        challenge, _ = extended.generate_level(20001, 1, quality_profile='challenge')
+        challenge, _ = extended.generate_legacy_level(20001, 1, quality_profile='challenge')
         self.assertIsNotNone(challenge)
         self.assertLess(challenge['minimum_slack_moves'], 8)
         self.assertEqual(bank.check_prefix([challenge], 'train', 'challenge'), 20002)
@@ -78,7 +78,7 @@ class ExtendExtendedBankTests(unittest.TestCase):
             prefixes,gate,_=self.fixture(root)
             old=root/'old.jsonl';old.write_text('')
             out=root/'out';report=root/'report.json'
-            args=['--train-count','2','--validation-count','2','--train-prefix',str(prefixes['train']),
+            args=['--legacy','--train-count','2','--validation-count','2','--train-prefix',str(prefixes['train']),
                   '--validation-prefix',str(prefixes['validation']),'--gate-report',str(gate),
                   '--out-dir',str(out),'--report',str(report),'--existing-banks',str(old)]
             with redirect_stdout(io.StringIO()): self.assertEqual(bank.main(args),0)

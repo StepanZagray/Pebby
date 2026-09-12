@@ -46,6 +46,8 @@ this module must work in a checkout where they do not exist yet -- reading,
 merging and inspecting shards needs none of them.
 """
 
+from ..ls20.provenance import generated_context, difficulty_provenance, search_limit_for
+
 import argparse
 from collections import deque
 from datetime import datetime, timezone
@@ -421,7 +423,7 @@ def episode_from_spec(spec, epsilon, rng, max_actions=None, deviations=DEVIATION
                       follow=DEVIATION_FOLLOW, steps=DEVIATION_STEPS, pads=PAD_BRANCHES):
     """One verified level: its on-path trajectory, deviation branches and pad branches."""
     env_module, generate, plan = _module("env"), _module("generate"), _module("plan")
-    context_index = spec["seed"] % 7
+    context_index = generated_context(spec)
     if context_index == 0 and spec.get("launchers"):
         raise ValueError("context-zero launcher hints are outside the oracle state")
 
@@ -445,7 +447,7 @@ def episode_from_spec(spec, epsilon, rng, max_actions=None, deviations=DEVIATION
     # at a level's start, which is where this one is built, and its distance
     # table then covers the rollout, every branch and every optimal-set mask.
     branching = (deviations or pads) and solution
-    oracle = plan.oracle_for(env) if (epsilon or not solution or branching or not context_proved) else None
+    oracle = plan.oracle_for(env, limit=search_limit_for(spec, 600_000)) if (epsilon or not solution or branching or not context_proved) else None
     if oracle is not None and (oracle.truncated or not oracle.solvable):
         raise ValueError("legacy collection requires a complete solvable contextual oracle")
     if not context_proved:
@@ -473,7 +475,7 @@ def episode_from_spec(spec, epsilon, rng, max_actions=None, deviations=DEVIATION
             "actions": np.array(rows["actions"], dtype=np.uint8),
             "to_go": np.array(rows["to_go"], dtype=np.int16),
             "optimal": np.array(rows["optimal"], dtype=np.uint8),
-            "seed": int(spec.get("seed", -1)), "difficulty": spec.get("difficulty"),
+            "seed": int(spec.get("seed", -1)), **difficulty_provenance(spec),
             "source_generator_version": spec.get("generator_version"),
             "context_index": context_index,
             "steps": walked, "completed": completed,

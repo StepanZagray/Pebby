@@ -14,12 +14,12 @@ from tools.audit_world_contexts import gameplay_hash
 class ExtendedCurriculumTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.specs = {d: extended.generate_level(seed, d, attempts=16)[0]
+        cls.specs = {d: extended.generate_legacy_level(seed, d, attempts=16)[0]
                      for d, seed in ((1, 20001), (3, 20008), (5, 20005))}
         assert all(cls.specs.values())
 
     def test_deterministic_separate_namespace_and_larger_connected_layouts(self):
-        self.assertEqual(self.specs[3], extended.generate_level(20008, 3)[0])
+        self.assertEqual(self.specs[3], extended.generate_legacy_level(20008, 3)[0])
         for spec in self.specs.values():
             self.assertEqual(spec['extended_curriculum_version'], 2)
             self.assertEqual(spec['generation_namespace'], extended.NAMESPACE)
@@ -32,7 +32,7 @@ class ExtendedCurriculumTests(unittest.TestCase):
             self.assertEqual(spec['gameplay_sha256'], gameplay_hash(spec))
         for seed in (0, 10000, 1000000, 1019999, 2000000):
             with self.assertRaises(ValueError):
-                extended.generate_level(seed)
+                extended.generate_legacy_level(seed)
 
     def test_actual_context_complete_oracle_real_win_and_two_moving_types(self):
         for d, spec in self.specs.items():
@@ -40,7 +40,7 @@ class ExtendedCurriculumTests(unittest.TestCase):
             oracle = Oracle(extract(env), engine='fast', limit=600000)
             self.assertFalse(oracle.truncated)
             self.assertTrue(oracle.solvable)
-            self.assertEqual(oracle.solution(), spec['solution'])
+            self.assertEqual(oracle.solution(seed=spec['seed']), spec['solution'])
             self.assertEqual(spec['training_context_index'], spec['seed'] % 7)
             self.assertEqual(spec['random_transitions_checked'], 8)
             for action in spec['solution']:
@@ -141,7 +141,7 @@ class ExtendedCurriculumTests(unittest.TestCase):
         self.assertEqual(extended.verify(spec), (None, 'no_unused_distractor_cycler'))
 
     def test_challenge_profile_retains_tight_routes_without_relaxing_learning(self):
-        challenge, _ = extended.generate_level(20001, 1, quality_profile='challenge')
+        challenge, _ = extended.generate_legacy_level(20001, 1, quality_profile='challenge')
         self.assertIsNotNone(challenge)
         self.assertEqual(challenge['step_counter'], 42)
         self.assertEqual(challenge['step_cost'], 2)
@@ -176,7 +176,7 @@ class ExtendedCurriculumTests(unittest.TestCase):
     def test_geometry_holdout_is_translation_invariant_and_separated(self):
         from pebby.ls20.generation_quality import geometry_partition
         train = self.specs[1]
-        validation, _ = extended.generate_level(1020001, 1)
+        validation, _ = extended.generate_legacy_level(1020001, 1)
         self.assertIsNotNone(validation)
         for spec, split in ((train, 'train'), (validation, 'validation')):
             fingerprint, partition = geometry_partition(spec)
@@ -203,7 +203,7 @@ class ExtendedCurriculumTests(unittest.TestCase):
         launcher = {**spec, 'seed': 20006, 'launchers': [{'cell': [1, 1], 'delta': [1, 0]}]}
         self.assertEqual(launcher['seed'] % 7, 0)
         self.assertEqual(extended.verify(launcher), (None, 'context_zero_launcher_pending_hint'))
-        accepted, reasons = extended.generate_level(20001, 1, attempts=2, search_limit=1)
+        accepted, reasons = extended.generate_legacy_level(20001, 1, attempts=2, search_limit=1)
         self.assertIsNone(accepted)
         self.assertEqual(reasons.get('search_truncated'), 2)
 

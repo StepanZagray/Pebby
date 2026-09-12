@@ -1,4 +1,6 @@
 """Bounded generated-only H4 training with true recurrent prediction gradients."""
+from pebby.ls20.provenance import (validate_row_difficulties, metadata_difficulty_stages, metadata_difficulty_version)
+
 import argparse
 import gc
 import json
@@ -63,8 +65,7 @@ def load_cache(path, split):
             raise ValueError(f'integer labels required: {name}')
     if not np.isin(arrays['actions'], np.arange(4)).all():
         raise ValueError('invalid chronological action')
-    if not np.isin(arrays['difficulties'], np.arange(1,6)).all():
-        raise ValueError('difficulty outside1..5')
+    validate_row_difficulties(arrays['seeds'], arrays['difficulties'], manifest)
     if any(arrays[name][:,:3].any() for name in EVENTS):
         raise ValueError('interior ending/reset violates chronology')
     if np.any(arrays['won'].astype(bool) & ~arrays['terminal'].astype(bool)):
@@ -164,6 +165,8 @@ def main():
     try:
         train, tm = load_cache(args.train_cache, 'train')
         val, vm = load_cache(args.validation_cache, 'validation')
+        if metadata_difficulty_version(tm) != metadata_difficulty_version(vm):
+            raise ValueError('train and validation difficulty versions differ')
         if tm['field_encoder'] != vm['field_encoder'] or np.intersect1d(train['seeds'],val['seeds']).size:
             raise ValueError('encoder mismatch or train/validation overlap')
         sources = {}
@@ -198,7 +201,7 @@ def main():
             model = new_model(args).train()
             optimizer = torch.optim.AdamW(model.parameters(),lr=args.lr,weight_decay=.01)
             rng = np.random.default_rng(args.seed)
-            draws = np.zeros(5,dtype=np.int64)
+            draws = np.zeros(len(metadata_difficulty_stages(tm)),dtype=np.int64)
             report.update(parameters=model.parameter_count(),training=[])
             for step in range(args.updates):
                 rows = sample_rows(train,size,step/max(args.updates-1,1),rng)
@@ -212,7 +215,7 @@ def main():
                 result['total'].backward()
                 norm = torch.nn.utils.clip_grad_norm_(model.parameters(),10.,error_if_nonfinite=True)
                 optimizer.step()
-                draws += np.bincount(train['difficulties'][rows],minlength=6)[1:6]
+                draws += np.bincount(train['difficulties'][rows],minlength=len(draws)+1)[1:len(draws)+1]
                 if step == 0 or (step+1)%20 == 0 or step+1 == args.updates:
                     entry=dict(step=step+1,loss=float(result['total'].detach()),gradient_norm=float(norm),
                         elapsed_seconds=time.monotonic()-start,

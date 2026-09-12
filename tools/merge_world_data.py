@@ -25,6 +25,8 @@ engine proof in the form consumed by ``world_train.require_verified_data``.
 
 from __future__ import annotations
 
+from pebby.ls20.provenance import generated_context, difficulty_version
+
 import argparse
 import copy
 import hashlib
@@ -127,7 +129,7 @@ def _record_from_validity(raw: Any, seed_hint: Any = None) -> dict[str, Any]:
                       and record.get("engine_win") is True
                       and record.get("replay_lives") == 3
                       and record.get("levels_completed") == 1
-                      and record.get("context_index") == seed % 7
+                      and record.get("context_index") == generated_context(record)
                       and record.get("search_truncated") is False)
     else:
         summary_ok = True
@@ -142,7 +144,7 @@ def _record_from_validity(raw: Any, seed_hint: Any = None) -> dict[str, Any]:
     else:
         record["accepted"] = (proof.get("context_engine_verified") is True
                                and proof.get("search_truncated") is False
-                               and proof.get("context_index") == seed % 7
+                               and proof.get("context_index") == generated_context(record)
                                and "excluded" not in proof
                                and summary_ok
                                and record.get("context_validity", True) is not False)
@@ -224,7 +226,7 @@ def _validity_records(path: Path, split: str) -> tuple[dict[int, dict[str, Any]]
                 raise MergeError(f"{path} seed {seed}: accepted proof is not engine verified")
             if proof.get("search_truncated") is not False:
                 raise MergeError(f"{path} seed {seed}: accepted proof is truncated or incomplete")
-            if proof.get("context_index") != seed % 7:
+            if proof.get("context_index") != generated_context(record):
                 raise MergeError(f"{path} seed {seed}: context index does not match seed")
         result[seed] = record
     return result, audit_hash
@@ -361,7 +363,7 @@ def _level_for_seed(levels: Mapping[int, dict[str, Any]], seed: int, path: Path)
     # If a shard does carry that field, a false value is still a hard failure.
     if "context_engine_verified" in level and level["context_engine_verified"] is not True:
         raise MergeError(f"{path}: row seed {seed} lacks engine verification")
-    if "context_index" in level and level["context_index"] != seed % 7:
+    if "context_index" in level and level["context_index"] != generated_context(level):
         raise MergeError(f"{path}: row seed {seed} has the wrong context index")
     return level
 
@@ -447,6 +449,8 @@ def merge(inputs: Iterable[str | Path], out: str | Path, validity: str | Path,
             source_level = levels[seed]
             record = accepted.get(seed)
             if record is not None and record.get("accepted"):
+                if difficulty_version(record) != difficulty_version(source_level):
+                    raise MergeError(f"{path}: seed {seed} difficulty_version disagrees with validity audit")
                 difficulty = record.get("difficulty")
                 if difficulty is not None and source_level.get("difficulty") is not None \
                         and int(difficulty) != int(source_level["difficulty"]):

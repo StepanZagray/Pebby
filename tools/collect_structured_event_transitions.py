@@ -12,6 +12,8 @@ invented for a doomed state.
 
 from __future__ import annotations
 
+from pebby.ls20.provenance import generated_context, validate_difficulty
+
 import argparse
 import copy
 from collections import Counter
@@ -73,11 +75,11 @@ def _verify_spec(spec: dict, path: Path, split: str) -> None:
         raise ValueError(f"{path}: seed {seed} lacks a complete contextual engine proof")
     if spec.get("engine_verified") is not True:
         raise ValueError(f"{path}: seed {seed} lacks engine_verified=true")
-    if spec.get("training_context_index") != seed % 7:
+    if spec.get("training_context_index") != generated_context(spec):
         raise ValueError(f"{path}: seed {seed} has the wrong training context")
     proof = spec.get("proof")
     if not isinstance(proof, dict) or proof.get("context_engine_verified") is not True \
-            or proof.get("context_index") != seed % 7:
+            or proof.get("context_index") != generated_context(spec):
         raise ValueError(f"{path}: seed {seed} lacks a matching nested context proof")
     # The training pilot explicitly carries generated_only.  The older verified
     # validation bank omits that optional field, so its generated format/proof
@@ -292,7 +294,7 @@ def _row_from_capture(env, capture, observed, valid, previous, spec, split, step
         "actual_won": np.bool_(selected_won),
         "actual_event": np.uint8(_event_code(selected_loss, selected_terminal, selected_won)),
         "seed": np.int64(int(spec["seed"])),
-        "context_index": np.int8(int(spec["seed"]) % 7),
+        "context_index": np.int8(generated_context(spec)),
         "split_id": np.int8(0 if split == "train" else 1),
         "episode_step": np.int16(step),
     }
@@ -300,7 +302,7 @@ def _row_from_capture(env, capture, observed, valid, previous, spec, split, step
 
 def collect_level(spec: dict, split: str, history: int, max_actions: int,
                   search_limit: int, rng: np.random.Generator) -> tuple[list[dict], dict, int, int, int]:
-    env, oracle, proof = world_data.verified_context(spec, context_index=int(spec["seed"]) % 7,
+    env, oracle, proof = world_data.verified_context(spec, context_index=generated_context(spec),
                                                      search_limit=search_limit)
     if env is None or oracle is None:
         return [], {**proof, "split": split, "shortfall": "context_verification_failed"}, 0, 0, 0

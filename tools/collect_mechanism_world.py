@@ -9,6 +9,8 @@ only; no held-out or official level is read.
 
 from __future__ import annotations
 
+from pebby.ls20.provenance import generated_context, row_contexts
+
 import argparse
 from collections import Counter
 import hashlib
@@ -60,15 +62,15 @@ def choose_specs(path: Path, per_mode: int) -> tuple[list[dict], dict]:
         seen.add(seed)
         if not (700_000 <= seed < 900_000):
             raise ValueError(f"mechanism source seed outside training namespace: {seed}")
-        if seed % 7 == 0 and spec.get("launchers"):
+        if generated_context(spec) == 0 and spec.get("launchers"):
             raise ValueError(f"context-zero launchers are outside the oracle contract: {seed}")
         if spec.get("context_engine_verified") is not True or spec.get("search_truncated") is not False:
             raise ValueError(f"source context proof incomplete for seed {seed}")
-        if spec.get("training_context_index") != seed % 7:
+        if spec.get("training_context_index") != generated_context(spec):
             raise ValueError(f"source context mismatch for seed {seed}")
         proof = spec.get("proof")
         if not isinstance(proof, dict) or proof.get("context_engine_verified") is not True \
-                or proof.get("context_index") != seed % 7:
+                or proof.get("context_index") != generated_context(spec):
             raise ValueError(f"nested source proof incomplete for seed {seed}")
         by_mode[spec["pilot_mode"]].append(spec)
     for mode in MODES:
@@ -104,9 +106,9 @@ def collect_checked(specs: list[dict], history: int, samples: int, epsilon: floa
     for proof in arrays["meta"]["levels"]:
         seed = int(proof["seed"])
         if proof.get("context_engine_verified") is not True or proof.get("search_truncated") is not False \
-                or proof.get("context_index") != seed % 7:
+                or proof.get("context_index") != generated_context(proof):
             raise ValueError(f"collector proof invalid for seed {seed}: {proof}")
-    if not np.array_equal(arrays["context_index"], arrays["seeds"] % 7):
+    if not np.array_equal(arrays["context_index"], row_contexts(arrays["seeds"], arrays["meta"]["levels"])):
         raise ValueError("collector row context mismatch")
     if np.any(arrays["won"] & ~arrays["terminal"]):
         raise ValueError("winning successor is not terminal")
@@ -129,7 +131,7 @@ def require_verified_data(arrays):
         proof = proofs.get(int(seed), {})
         if proof.get("context_engine_verified") is not True or proof.get("search_truncated", False):
             raise ValueError(f"seed {seed} lacks an untruncated contextual engine proof")
-        if proof.get("context_index") != int(seed) % 7:
+        if proof.get("context_index") != generated_context(proof):
             raise ValueError(f"seed {seed} was verified in the wrong context")
 
 

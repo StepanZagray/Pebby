@@ -50,3 +50,23 @@ def geometry_partition(spec):
     normalized = sorted((x - left, y - top) for x, y in free)
     fingerprint = hashlib.sha256(json.dumps(normalized, separators=(',', ':')).encode()).hexdigest()
     return fingerprint, 'validation' if int(fingerprint[:2], 16) % 2 else 'train'
+
+
+def geometry_d4_hash(spec):
+    """Canonical free geometry under translation, rotations and reflections."""
+    free = {(x,y) for x in range(12) for y in range(12)} - {tuple(p) for p in spec['walls']}
+    if not free:
+        raise ValueError('empty playable geometry')
+    variants=[]
+    for swap in (False,True):
+        for sx in (-1,1):
+            for sy in (-1,1):
+                points=[(sx*(y if swap else x),sy*(x if swap else y)) for x,y in free]
+                left,top=min(x for x,y in points),min(y for x,y in points)
+                variants.append(sorted((x-left,y-top) for x,y in points))
+    return hashlib.sha256(json.dumps(min(variants),separators=(',',':')).encode()).hexdigest()
+
+
+def geometry_d4_partition(spec):
+    fingerprint=geometry_d4_hash(spec)
+    return fingerprint, 'validation' if int(fingerprint[:2],16)%2 else 'train'

@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pebby.ls20.extended_curriculum import generate_level
+from pebby.ls20.extended_curriculum import generate_legacy_level as generate_level
 from tools import stream_extended_collection as stream
 
 

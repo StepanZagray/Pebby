@@ -3,6 +3,8 @@
 Loss is cross entropy to the UNIFORM distribution over all optimal actions,
 not negative log total optimal probability mass. No controller rollouts here.
 """
+from pebby.ls20.provenance import metadata_difficulty_stages, metadata_difficulty_version
+
 import argparse
 import gc
 import hashlib
@@ -222,6 +224,8 @@ def main():
     signal.signal(signal.SIGALRM,expired);signal.alarm(args.seconds)
     try:
         train,tm=load_policy_cache(args.train_cache,'train');val,vm=load_policy_cache(args.validation_cache,'validation')
+        if metadata_difficulty_version(tm) != metadata_difficulty_version(vm):
+            raise ValueError('train and validation difficulty versions differ')
         if tm['field_encoder']!=vm['field_encoder'] or np.intersect1d(train['seeds'],val['seeds']).size:
             raise ValueError('encoder mismatch or split leakage')
         policy,save_policy,factored=build_training_policy(args.world,args.visibility,args.dynamics,
@@ -262,7 +266,7 @@ def main():
         else:
             policy.readout=new_head(policy.config(),args.seed,args.device);policy.train()
             optimizer=torch.optim.AdamW(policy.readout.parameters(),lr=args.lr,weight_decay=.01)
-            rng=np.random.default_rng(args.seed);seen=set();draws=np.zeros(5,np.int64)
+            rng=np.random.default_rng(args.seed);seen=set();draws=np.zeros(len(metadata_difficulty_stages(tm)),np.int64)
             for step in range(args.updates):
                 rows=sample_rows(train,size,step/max(args.updates-1,1),rng)
                 if len(np.unique(train['seeds'][rows]))!=size:raise RuntimeError('duplicate level in policy batch')
@@ -270,7 +274,7 @@ def main():
                 loss,parts=loss_for_rows(policy.readout,train,rows,args.device,policy.dynamics,args.dynamics_batch)
                 if not bool(torch.isfinite(loss)):raise ValueError('nonfinite policy loss')
                 loss.backward();norm=torch.nn.utils.clip_grad_norm_(policy.readout.parameters(),10.,error_if_nonfinite=True)
-                optimizer.step();seen.update(map(int,train['seeds'][rows]));draws+=np.bincount(train['difficulties'][rows],minlength=6)[1:6]
+                optimizer.step();seen.update(map(int,train['seeds'][rows]));draws+=np.bincount(train['difficulties'][rows],minlength=len(draws)+1)[1:len(draws)+1]
                 if step==0 or (step+1)%20==0 or step+1==args.updates:
                     report['training'].append({'step':step+1,'loss':float(loss.detach()),
                         'branch_losses':{k:float(v.detach()) for k,v in parts.items()},'gradient_norm':float(norm),

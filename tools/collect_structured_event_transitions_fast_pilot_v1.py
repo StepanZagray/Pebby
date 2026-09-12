@@ -10,6 +10,8 @@ separate from the accepted v3 collector.
 
 from __future__ import annotations
 
+from pebby.ls20.provenance import generated_context, validate_difficulty
+
 import argparse
 import hashlib
 import json
@@ -73,7 +75,7 @@ def _verify_actual_branch(env, oracle, branch, result, seed, step, action_index)
 def collect_level_fast(spec: dict, split: str, history: int, max_actions: int,
                        search_limit: int, rng: np.random.Generator):
     env, oracle, proof = world_data.verified_context(
-        spec, context_index=int(spec["seed"]) % 7, search_limit=search_limit)
+        spec, context_index=generated_context(spec), search_limit=search_limit)
     if env is None or oracle is None:
         return [], {**proof, "split": split, "shortfall": "context_verification_failed"}, 0, 0, 0, 0
 

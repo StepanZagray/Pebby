@@ -37,7 +37,7 @@ class ContextProofTests(unittest.TestCase):
         self.assertEqual(fixed, repair_row(spec))
 
     def test_base_rejects_solvable_but_truncated_search_before_export(self):
-        spec = generate.generate_level(1, 1)
+        spec = generate.generate_legacy_level(1, 1)
         with patch("pebby.ls20.generate.Oracle") as oracle:
             oracle.return_value.truncated = True
             oracle.return_value.solvable = True
@@ -46,7 +46,7 @@ class ContextProofTests(unittest.TestCase):
 
     def test_hard_base_tier_completes_under_original_search_cap(self):
         for seed in (5, 7, 13):
-            spec = generate.generate_level(seed, 5)
+            spec = generate.generate_legacy_level(seed, 5)
             self.assertFalse(spec["search_truncated"])
             self.assertLess(spec["reachable_states"], 600_000)
             self.assertEqual(spec["context_index"], seed % 7)
@@ -107,7 +107,7 @@ class ContextProofTests(unittest.TestCase):
         self.assertTrue(_record_from_validity({**summary, "search_truncated": False})["accepted"])
 
     def test_repair_is_copy_only_and_fails_closed(self):
-        spec = generate.generate_level(1, 1)
+        spec = generate.generate_legacy_level(1, 1)
         with tempfile.TemporaryDirectory() as directory:
             source, target = (Path(directory) / name for name in ("source.jsonl", "copy.jsonl"))
             original = json.dumps(spec) + "\n"
@@ -136,7 +136,7 @@ class ContextProofTests(unittest.TestCase):
         self.assertEqual(int(row["to_go"][0]), 48)
 
     def test_bank_read_accepts_historical_geometry_but_refuses_unknown_version(self):
-        spec = generate.generate_level(1, 1)
+        spec = generate.generate_legacy_level(1, 1)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bank.jsonl"
             path.write_text(json.dumps({**spec, "generator_version": 2}) + "\n")
@@ -148,7 +148,7 @@ class ContextProofTests(unittest.TestCase):
     def test_targeted_repair_preserves_untouched_rows_without_certifying_them(self):
         stale = json.loads((Path(__file__).parent / "fixtures" /
                             "generator_context_seed628.json").read_text())
-        untouched = generate.generate_level(1, 1)
+        untouched = generate.generate_legacy_level(1, 1)
         untouched.pop("context_engine_verified")
         with tempfile.TemporaryDirectory() as directory:
             source, target = (Path(directory) / name for name in ("old.jsonl", "fixed.jsonl"))

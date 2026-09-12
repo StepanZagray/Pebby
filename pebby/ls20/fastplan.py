@@ -31,7 +31,9 @@ import threading
 from . import names
 
 SOURCE = Path(__file__).with_name("_fastplan.c")
-ABI_VERSION = 1
+# The result Mapping now requires the native compact-index symbols below.
+# Bump the ABI so an old shared object can never be accepted accidentally.
+ABI_VERSION = 2
 KIND_CODES = {"shape": 1, "color": 2, "rotation": 3}
 OUTCOMES = ("rejected", "hint", "launched", "won", "died", "moved")
 FIELD_LIMIT = 62  # bits available for one packed state (keeps every key a positive int64)
@@ -158,6 +160,14 @@ def _load():
                 ctypes.POINTER(ctypes.c_int32)]
             library.ls20_free.restype = None
             library.ls20_free.argtypes = [ctypes.c_void_p]
+            library.ls20_index_build.restype = ctypes.POINTER(ctypes.c_int32)
+            library.ls20_index_build.argtypes = [
+                ctypes.POINTER(ctypes.c_uint64), ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_size_t)]
+            library.ls20_index_lookup.restype = ctypes.c_int64
+            library.ls20_index_lookup.argtypes = [
+                ctypes.POINTER(ctypes.c_int32), ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_uint64), ctypes.c_size_t, ctypes.c_uint64]
             _library = library
         except (OSError, AttributeError) as error:
             _load_error = str(error)
@@ -337,31 +347,115 @@ class PackedDistances(Mapping):
     space is simply absent.
     """
 
-    __slots__ = ("_tables", "_table")
+    __slots__ = ("_tables", "_keys", "_values", "_index", "_capacity", "_count",
+                 "_library", "_lock")
 
-    def __init__(self, tables, table):
-        self._tables, self._table = tables, table
+    def __init__(self, tables, keys, values, index, capacity, count, library):
+        self._tables = tables
+        self._keys, self._values = keys, values
+        self._index, self._capacity, self._count = index, int(capacity), int(count)
+        self._library = library
+        # Search arrays are immutable and safe for concurrent readers.  The
+        # small lock only serializes explicit close() against a reader so a
+        # caller cannot free a native buffer while ctypes is using it.
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_native(cls, tables, keys, values, count, library):
+        """Take ownership of native search arrays and build their compact index."""
+        count = int(count)
+        if count < 0:
+            raise ValueError("negative search result count")
+        capacity = ctypes.c_size_t()
+        index = None
+        try:
+            if count:
+                index = library.ls20_index_build(
+                    keys, ctypes.c_size_t(count), ctypes.byref(capacity))
+                if not index:
+                    raise MemoryError("fast planner result index allocation failed")
+            result = cls(tables, keys, values, index, capacity.value, count, library)
+            # Ownership has moved to result.  The caller must not free these pointers.
+            return result
+        except BaseException:
+            if index:
+                library.ls20_free(index)
+            raise
+
+    def close(self):
+        """Release the C result buffers; safe to call more than once."""
+        with self._lock:
+            library = self._library
+            keys, values, index = self._keys, self._values, self._index
+            self._keys = self._values = self._index = None
+            self._capacity = self._count = 0
+            if library is not None:
+                if index:
+                    library.ls20_free(index)
+                if keys:
+                    library.ls20_free(keys)
+                if values:
+                    library.ls20_free(values)
+            self._library = None
+
+    def __del__(self):  # pragma: no cover - exercised by repeated-free smoke tests
+        try:
+            self.close()
+        except Exception:
+            # Interpreter shutdown can tear down ctypes before this object.  A
+            # best-effort leak is safer than calling into a half-destroyed DLL.
+            pass
+
+    def _value_for_key(self, key):
+        """Return a copied distance while holding the native-buffer lock."""
+        with self._lock:
+            if self._count == 0 or self._index is None:
+                return None
+            position = int(self._library.ls20_index_lookup(
+                self._index, self._capacity, self._keys, self._count,
+                ctypes.c_uint64(key)))
+            if position < 0:
+                return None
+            # Copy the int32 value before close() can free the arrays.
+            return int(self._values[position])
 
     def __getitem__(self, state):
         key = self._tables.pack(state)
         if key is None:
             raise KeyError(state)
-        return self._table[key]
+        value = self._value_for_key(key)
+        if value is None:
+            raise KeyError(state)
+        return value
 
     def get(self, state, default=None):
         key = self._tables.pack(state)
-        return default if key is None else self._table.get(key, default)
+        if key is None:
+            return default
+        value = self._value_for_key(key)
+        return default if value is None else value
 
     def __contains__(self, state):
         key = self._tables.pack(state)
-        return key is not None and key in self._table
+        return key is not None and self._value_for_key(key) is not None
 
     def __len__(self):
-        return len(self._table)
+        return self._count
 
     def __iter__(self):
         unpack = self._tables.unpack
-        return (unpack(key) for key in self._table)
+
+        def iterator():
+            position = 0
+            while True:
+                with self._lock:
+                    if position >= self._count or self._keys is None:
+                        return
+                    key = int(self._keys[position])
+                yield unpack(key)
+                position += 1
+
+        return iterator()
 
     def __repr__(self):
         return f"PackedDistances({len(self)} states)"
@@ -383,14 +477,17 @@ def search(tables, start, limit):
                                  ctypes.byref(count), ctypes.byref(reachable), ctypes.byref(truncated))
     if status != 0:
         raise MemoryError("fast planner ran out of memory")
+    owned = False
     try:
-        n = count.value
-        keys = ctypes.cast(states, ctypes.POINTER(ctypes.c_uint64 * n)).contents[:] if n else []
-        values = ctypes.cast(distance, ctypes.POINTER(ctypes.c_int32 * n)).contents[:] if n else []
+        result = PackedDistances.from_native(tables, states, distance, count.value, library)
+        owned = True
+        return result, reachable.value, bool(truncated.value)
     finally:
-        library.ls20_free(states)
-        library.ls20_free(distance)
-    return PackedDistances(tables, dict(zip(keys, values))), reachable.value, bool(truncated.value)
+        if not owned:
+            if states:
+                library.ls20_free(states)
+            if distance:
+                library.ls20_free(distance)
 
 
 def step(tables, state, action):

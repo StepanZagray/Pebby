@@ -64,6 +64,10 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 
 .muted { color: var(--ink-dim); margin: 0; font-size: 13px; }
+.two-up { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.two-up .field, .field.stack { min-width: 0; display: block; }
+.two-up label, .field.stack label { display: block; margin-bottom: 4px; }
+#bank-fields, #gen-fields, #shipped-fields { min-width: 0; }
 .error {
   margin: 10px 0 0;
   padding: 8px 10px;
@@ -108,6 +112,27 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 .pill.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
 .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+
+/* The stage pill reports the run, so a finished run gets a filled chip rather
+   than a tint the eye slides past. */
+#game-state {
+  padding: 5px 13px;
+  font-size: 13px;
+}
+#game-state.good {
+  color: #04140d;
+  background: var(--good);
+  border-color: var(--good);
+}
+#game-state.bad {
+  color: #1a0606;
+  background: var(--bad);
+  border-color: var(--bad);
+}
+#game-state.good::before, #game-state.bad::before {
+  content: "\2713\00a0";
+}
+#game-state.bad::before { content: "\2715\00a0"; }
 
 /* ---- layout ---- */
 
@@ -159,6 +184,83 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+
+/* ---- finish state ---- */
+
+/* A corner pill is easy to miss mid-play, so the board itself changes colour
+   and a card lands over it the moment a run ends. */
+.board-wrap.is-win {
+  border-color: color-mix(in srgb, var(--good) 65%, var(--line));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--good) 45%, transparent),
+    0 0 38px color-mix(in srgb, var(--good) 24%, transparent);
+}
+.board-wrap.is-over {
+  border-color: color-mix(in srgb, var(--bad) 65%, var(--line));
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--bad) 45%, transparent),
+    0 0 38px color-mix(in srgb, var(--bad) 22%, transparent);
+}
+
+.board-banner {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, #05070c 66%, transparent);
+  backdrop-filter: blur(2px);
+  z-index: 2;
+}
+.board-banner[hidden] { display: none; }
+
+.banner-card {
+  width: min(320px, 100%);
+  padding: 20px 18px 18px;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--good);
+  border-radius: var(--radius);
+  background: var(--panel);
+  text-align: center;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.45);
+  animation: banner-in 220ms ease-out both;
+}
+.board-banner.is-over .banner-card { border-top-color: var(--bad); }
+
+.banner-mark {
+  display: grid;
+  place-items: center;
+  width: 44px; height: 44px;
+  margin: 0 auto 10px;
+  border-radius: 999px;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--good);
+  background: color-mix(in srgb, var(--good) 16%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--good) 40%, transparent);
+}
+.board-banner.is-over .banner-mark {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 16%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bad) 40%, transparent);
+}
+
+.banner-title { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.01em; }
+.banner-sub { margin: 5px 0 0; font-size: 13px; color: var(--ink-dim); }
+.banner-actions { display: flex; gap: 8px; margin-top: 15px; }
+.banner-actions button { flex: 1; }
+
+@keyframes banner-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banner-card { animation: none; }
+  .icon-btn svg { transition: none; }
+  .spin { animation: none; border-top-color: currentColor; }
+  .working::before { animation: none; }
 }
 
 .stage-foot {
@@ -221,6 +323,10 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   background: var(--panel);
 }
 .panel > h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.09em;
@@ -230,7 +336,115 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 
 fieldset { margin: 0; padding: 0; border: 0; }
-fieldset[disabled] { opacity: 0.55; }
+.panel.offline fieldset[disabled] { opacity: 0.55; }
+
+/* ---- one panel, three sources ---- */
+
+/* Radios rather than a hand-rolled tablist: they arrive with arrow-key
+   navigation already correct, and the page's arrow-key play steps aside for
+   form fields, so nothing has to be taught about the other. */
+.seg {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.seg-item { position: relative; display: block; }
+.seg-item input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.seg-item span {
+  display: block;
+  padding: 6px 4px;
+  border-radius: 7px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-dim);
+  transition: background 120ms ease, color 120ms ease;
+}
+.seg-item input:checked + span {
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+}
+.seg-item:hover input:not(:checked) + span { color: var(--ink); }
+.seg-item input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Both carry a display of their own, so [hidden] has to be said out loud. */
+.pane[hidden], .field[hidden] { display: none; }
+.pane-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.pane-foot p { flex: 1; min-width: 0; }
+.pane-note { margin-top: 12px; font-size: 12px; color: var(--ink-faint); }
+
+/* One quiet square for every step: seed, page, refresh. */
+.step, .ghost {
+  flex: none;
+  width: 32px;
+  padding: 0;
+  color: var(--ink-dim);
+  background: transparent;
+}
+.step { height: 34px; font-size: 12px; }
+.ghost { height: 30px; font-size: 15px; }
+.step:hover:not(:disabled), .ghost:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.seed-row { display: flex; gap: 6px; min-width: 0; }
+.seed-row .seed-input { flex: 1; min-width: 0; }
+
+.pager { display: flex; align-items: center; gap: 8px; }
+.pager p { flex: 1; min-width: 0; text-align: center; font-size: 12px; }
+
+/* ---- work in flight ---- */
+
+/* The section that asked for a level reports it. Dimming the whole panel says
+   "unavailable"; a spinner on the button you pressed says "working on it". */
+.panel.is-working { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+
+.working {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+.working[hidden] { display: none; }
+.working::before {
+  content: "";
+  width: 7px; height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.spin {
+  display: none;
+  flex: none;
+  width: 13px; height: 13px;
+  border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  border-radius: 999px;
+  animation: spin 640ms linear infinite;
+}
+.panel.is-working .spin { display: block; }
+.panel.is-working button:disabled.primary,
+.panel.is-working button:disabled.wide {
+  opacity: 1;
+  cursor: progress;
+}
+
+@keyframes spin { to { transform: rotate(1turn); } }
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
 
 hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
 
@@ -261,6 +475,10 @@ input:focus-visible, select:focus-visible, button:focus-visible {
 }
 
 button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -280,16 +498,56 @@ button.primary {
 }
 button.wide { width: 100%; margin-top: 8px; }
 
-.seed-row {
+/* The seed field owns its own randomiser: the die fills the box, the buttons
+   below are the only things that actually fetch a level. */
+.seed-input { position: relative; display: flex; }
+.seed-input input[type="number"] { padding-right: 38px; }
+.seed-input input::-webkit-outer-spin-button,
+.seed-input input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.seed-input input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+
+.icon-btn {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 44px;
-  gap: 8px;
-  margin-top: 12px;
+  place-items: center;
+  width: 28px; height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-dim);
 }
-.step { padding: 8px 0; }
+.icon-btn svg { fill: currentColor; }
+.icon-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+.icon-btn:active:not(:disabled) svg { transform: rotate(-24deg); }
+.icon-btn svg { transition: transform 120ms ease; }
 
 .btn-row { display: flex; gap: 8px; margin-top: 10px; }
 .btn-row button { flex: 1; }
+.btn-row.quiet button {
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--ink-dim);
+  background: transparent;
+}
+.btn-row.quiet button:hover:not(:disabled) { color: var(--ink); background: var(--panel-2); }
+
+/* Inputs only set intent; this says so when they have drifted from the level
+   currently on the board. */
+button.primary.dirty {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.hint {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--accent);
+}
 
 /* ---- facts and features ---- */
 

@@ -11,7 +11,7 @@ import unittest
 
 from pebby.ls20 import names
 from pebby.ls20.env import Ls20Env, Ls20Scenario, UPSTREAM
-from pebby.ls20.generate import DIFFICULTIES, build_level, generate_level
+from pebby.ls20.generate import LEGACY_DIFFICULTIES as DIFFICULTIES, build_level, generate_legacy_level as generate_level
 from pebby.ls20.layout import extract
 from pebby.ls20.plan import Oracle, Unplannable, oracle_for
 

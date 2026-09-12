@@ -7,6 +7,8 @@ generated-only CPU diagnostic; it does not load the official game levels.
 
 from __future__ import annotations
 
+from pebby.ls20.provenance import difficulty_stages, difficulty_version, validate_difficulty
+
 import argparse
 import hashlib
 import json
@@ -52,15 +54,19 @@ def stratified_seeds(specs, count, seed):
     """Choose distinct verified levels with deterministic equal difficulty quotas."""
     if count <= 0:
         raise ValueError("level count must be positive")
-    groups = {difficulty: [] for difficulty in range(1, 6)}
+    versions = {difficulty_version(spec) for spec in specs.values()}
+    if len(versions) > 1:
+        raise ValueError("mixed legacy and calibrated difficulty versions")
+    stages = difficulty_stages({"difficulty_version": next(iter(versions), None)})
+    groups = {difficulty: [] for difficulty in stages}
     for value, spec in specs.items():
-        difficulty = int(spec.get("difficulty", 0))
+        difficulty = validate_difficulty(spec)
         if difficulty not in groups:
             raise ValueError(f"seed {value} has invalid difficulty {difficulty}")
         groups[difficulty].append(int(value))
     if any(not values for values in groups.values()):
-        raise ValueError("verified bank must contain every difficulty 1..5")
-    base, remainder = divmod(count, 5)
+        raise ValueError(f"verified bank must contain every difficulty 1..{len(stages)}")
+    base, remainder = divmod(count, len(stages))
     quotas = {difficulty: base + int(difficulty <= remainder) for difficulty in groups}
     for difficulty, quota in quotas.items():
         if len(groups[difficulty]) < quota:
@@ -69,7 +75,7 @@ def stratified_seeds(specs, count, seed):
                 f"need {quota} for {count}-level stratified sample")
     rng = np.random.default_rng(seed)
     selected = []
-    for difficulty in range(1, 6):
+    for difficulty in stages:
         values = np.asarray(groups[difficulty], dtype=np.int64)
         selected.extend(int(value) for value in rng.permutation(values)[:quotas[difficulty]])
     return selected

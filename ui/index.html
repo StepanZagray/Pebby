@@ -26,9 +26,20 @@
       <span id="game-state" class="pill">&mdash;</span>
     </div>
 
-    <div class="board-wrap">
+    <div id="board-wrap" class="board-wrap">
       <canvas id="board" width="64" height="64" aria-describedby="board-summary"></canvas>
       <canvas id="board-overlay" class="board-overlay" aria-hidden="true"></canvas>
+      <div id="board-banner" class="board-banner" role="status" aria-live="polite" hidden>
+        <div class="banner-card">
+          <span id="banner-mark" class="banner-mark" aria-hidden="true">&#10003;</span>
+          <p id="banner-title" class="banner-title">Level complete</p>
+          <p id="banner-sub" class="banner-sub"></p>
+          <div class="banner-actions">
+            <button id="banner-primary" type="button" class="primary">Next level</button>
+            <button id="banner-dismiss" type="button">Stay here</button>
+          </div>
+        </div>
+      </div>
     </div>
     <p id="board-summary" class="sr-only" role="status"></p>
 
@@ -52,31 +63,109 @@
   </section>
 
   <aside class="rail">
-    <section class="panel">
-      <h2>Source</h2>
-      <fieldset id="source-fields" disabled>
-        <div class="field">
-          <label for="seed">Seed</label>
-          <input id="seed" type="number" min="0" max="4294967295" step="1" value="7" inputmode="numeric">
+    <!-- One place to pick a level. The three sources differ only in where the
+         level comes from, so they share a panel and only the chosen one is on
+         show; the rest of the rail is about the level already on the board. -->
+    <section class="panel offline" id="level-panel">
+      <h2>Level<span id="level-working" class="working" role="status" hidden>loading&hellip;</span></h2>
+
+      <div class="seg" role="radiogroup" aria-label="Where the level comes from">
+        <label class="seg-item">
+          <input type="radio" name="level-source" id="src-bank" value="bank" checked>
+          <span>Bank</span>
+        </label>
+        <label class="seg-item">
+          <input type="radio" name="level-source" id="src-generate" value="generate">
+          <span>Generate</span>
+        </label>
+        <label class="seg-item">
+          <input type="radio" name="level-source" id="src-shipped" value="shipped">
+          <span>Shipped</span>
+        </label>
+      </div>
+
+      <div class="pane" id="pane-bank">
+        <fieldset id="bank-fields" disabled>
+          <div class="field" id="bank-field" hidden>
+            <label for="bank">Bank</label>
+            <select id="bank"></select>
+          </div>
+          <div class="two-up">
+            <div class="field">
+              <label for="bank-split">Split</label>
+              <select id="bank-split"><option value="train">Training</option><option value="validation">Validation</option></select>
+            </div>
+            <div class="field">
+              <label for="bank-difficulty">Tier</label>
+              <select id="bank-difficulty"><option value="">All tiers</option></select>
+            </div>
+          </div>
+          <div class="field stack">
+            <label for="bank-level">Level</label>
+            <select id="bank-level" aria-describedby="bank-page"></select>
+          </div>
+          <div class="pager">
+            <button id="bank-prev" type="button" class="step" aria-label="Previous page of levels" title="Previous page">&#9664;</button>
+            <p id="bank-page" class="muted" role="status"></p>
+            <button id="bank-next" type="button" class="step" aria-label="Next page of levels" title="Next page">&#9654;</button>
+          </div>
+          <button id="load-bank" type="button" class="primary wide"><span class="spin" aria-hidden="true"></span><span id="load-bank-label">Load level</span></button>
+        </fieldset>
+        <div class="pane-foot">
+          <p id="bank-summary" class="muted" role="status">Looking for accepted levels&hellip;</p>
+          <button id="refresh-bank" type="button" class="ghost" aria-label="Refresh the bank listing" title="Refresh the bank listing">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+              <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="M19.9 12a7.9 7.9 0 1 1-2.31-5.59"/>
+              <path fill="currentColor" d="M19.9 3.6v5.2h-5.2z"/>
+            </svg>
+          </button>
         </div>
-        <div class="field">
-          <label for="difficulty">Difficulty</label>
-          <select id="difficulty"></select>
-        </div>
-        <div class="seed-row">
-          <button id="prev-seed" type="button" class="step" aria-label="Previous seed">&#9664;</button>
-          <button id="generate" type="button" class="primary">Generate</button>
-          <button id="next-seed" type="button" class="step" aria-label="Next seed">&#9654;</button>
-        </div>
-        <button id="random-seed" type="button" class="wide">Random seed</button>
-        <hr>
-        <div class="field">
-          <label for="shipped">Shipped</label>
-          <select id="shipped"></select>
-        </div>
-        <button id="load-shipped" type="button" class="wide">Load shipped level</button>
-      </fieldset>
-      <p id="source-error" class="error" role="alert" hidden></p>
+      </div>
+
+      <div class="pane" id="pane-generate" hidden>
+        <fieldset id="gen-fields" disabled>
+          <div class="field">
+            <label for="seed">Seed</label>
+            <div class="seed-row">
+              <button id="prev-seed" type="button" class="step" aria-label="Generate the previous seed" title="Generate seed &minus; 1">&#9664;</button>
+              <div class="seed-input">
+                <input id="seed" type="number" min="0" max="4294967295" step="1" value="7" inputmode="numeric">
+                <button id="roll-seed" type="button" class="icon-btn" aria-label="Roll a random seed" title="Roll a random seed">
+                  <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" focusable="false">
+                    <rect x="2.85" y="2.85" width="18.3" height="18.3" rx="4.4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+                    <circle cx="7.9" cy="7.9" r="1.85"/>
+                    <circle cx="16.1" cy="7.9" r="1.85"/>
+                    <circle cx="12" cy="12" r="1.85"/>
+                    <circle cx="7.9" cy="16.1" r="1.85"/>
+                    <circle cx="16.1" cy="16.1" r="1.85"/>
+                  </svg>
+                </button>
+              </div>
+              <button id="next-seed" type="button" class="step" aria-label="Generate the next seed" title="Generate seed + 1">&#9654;</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="difficulty">Tier</label>
+            <select id="difficulty"></select>
+          </div>
+          <button id="generate" type="button" class="primary wide"><span class="spin" aria-hidden="true"></span><span id="generate-label">Generate</span></button>
+          <p id="gen-hint" class="hint" hidden>Inputs changed &mdash; press Generate.</p>
+        </fieldset>
+        <p class="muted pane-note">Seven tiers, each calibrated to the shipped LS20 level of the same number. The die fills the box; only Generate and the arrows fetch.</p>
+      </div>
+
+      <div class="pane" id="pane-shipped" hidden>
+        <fieldset id="shipped-fields" disabled>
+          <div class="field">
+            <label for="shipped">Level</label>
+            <select id="shipped"></select>
+          </div>
+          <button id="load-shipped" type="button" class="primary wide"><span class="spin" aria-hidden="true"></span><span id="load-shipped-label">Load level</span></button>
+        </fieldset>
+        <p class="muted pane-note">The hand-made LS20 levels. They carry no stored solution here, and finishing one rolls straight into the next.</p>
+      </div>
+
+      <p id="level-error" class="error" role="alert" hidden></p>
     </section>
 
     <section class="panel">

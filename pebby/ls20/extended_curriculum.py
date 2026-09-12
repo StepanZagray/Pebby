@@ -1,6 +1,11 @@
-"""Optional larger generated lessons, separate from the deterministic v1 curriculum.
+"""Seven-tier public generation with an explicit historical extended diagnostic API.
 
-This module never reads shipped layouts, frames or routes. Drafts use the shared
+The default CLI uses resumable aggregate official reference calibration without
+copying shipped geometry or routes. --legacy and
+generate_legacy_level retain the old five-tier algorithm and metadata.
+The implementation below that API describes these historical lessons:
+
+The historical implementation never reads shipped layouts, frames or routes. Drafts use the shared
 sprite builder and are accepted only after complete contextual fast-Oracle search,
 real-engine WIN with three lives, and sampled reachable transition agreement.
 """
@@ -22,6 +27,9 @@ from .generation_quality import budget_floor, geometry_partition, route_budget_s
 from .layout import extract
 from .plan import Oracle, simulate
 
+from .reference_profiles import DIFFICULTIES
+
+LEGACY_DIFFICULTIES = (1, 2, 3, 4, 5)
 VERSION = 2
 NAMESPACE = 'ls20-extended-curriculum'
 SPLIT_STARTS = {'train': 20000, 'validation': 1020000}
@@ -42,6 +50,9 @@ def gameplay_hash(spec):
                 'launchers': sorted(spec.get('launchers', []), key=lambda x: x['cell']),
                 'refills': sorted(spec['refills']), 'step_counter': spec['step_counter'],
                 'step_cost': spec['step_cost'], 'fog': spec['fog']}
+    if 'difficulty_version' in spec:
+        from .provenance import generated_context
+        gameplay['context_index'] = generated_context(spec)
     return hashlib.sha256(json.dumps(gameplay, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -188,7 +199,7 @@ def verify(spec, search_limit=600000, transition_samples=8):
         return None, 'search_truncated'
     if not oracle.solvable:
         return None, 'unsolvable'
-    solution = oracle.solution()
+    solution = oracle.solution(seed=spec['seed'])
     if not solution or len(solution) < 10:
         return None, 'route_under_10_actions'
     expected_moving = len(spec.get('rails', []))
@@ -279,7 +290,7 @@ def verify(spec, search_limit=600000, transition_samples=8):
             'gameplay_sha256': gameplay_hash(spec)}, None
 
 
-def generate_level(seed, difficulty=1, attempts=16, search_limit=600000, quality_profile='learning'):
+def generate_legacy_level(seed, difficulty=1, attempts=16, search_limit=600000, quality_profile='learning'):
     budget_floor({'quality_profile': quality_profile})
     if difficulty not in range(1, 6) or attempts < 1 or not 0 < search_limit <= 600000:
         raise ValueError('difficulty 1..5, positive attempts and search_limit <=600000 required')
@@ -309,6 +320,30 @@ def generate_level(seed, difficulty=1, attempts=16, search_limit=600000, quality
             return accepted, dict(excluded)
         excluded[reason] += 1
     return None, dict(excluded)
+
+
+def generate_level(seed, difficulty=1, attempts=400, search_limit=None, quality_profile=None):
+    """Seven-tier public generator preserving the (row, rejection counts) API."""
+    from .reference_generator import generate_level as reference_level
+    if not 20000 <= seed < 1000000 and not 1020000 <= seed < 2000000:
+        raise ValueError('seed outside extended train/validation namespace')
+    expected_profile = 'learning' if difficulty == 1 else 'challenge'
+    if quality_profile is not None and quality_profile != expected_profile:
+        raise ValueError('quality_profile is fixed by the reference difficulty tier')
+    excluded = Counter()
+    def rejected(record):
+        excluded[record['reason']] += 1
+    try:
+        row = reference_level(seed, difficulty, attempts=attempts, search_limit=search_limit,
+                              record_rejection=rejected)
+    except ContractMismatch:
+        raise
+    except RuntimeError as error:
+        if not str(error).startswith('no reference-profile level '):
+            raise
+        # The public extended API historically returns a bounded failure result.
+        return None, dict(excluded)
+    return row, row.get('generation_exclusions', dict(excluded))
 
 
 def summarize(rows):
@@ -344,7 +379,7 @@ def summarize(rows):
             'seeds': [s['seed'] for s in rows]}
 
 
-def main(argv=None):
+def legacy_main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--quality-profile', choices=('learning', 'challenge'), default='learning')
     parser.add_argument('--train-count', type=int, default=100)
@@ -427,7 +462,7 @@ def main(argv=None):
                         raise ValueError(f'seed {seed} overlaps an existing bank')
                     difficulty = len(bank_rows[split]) % 5 + 1
                     attempted_seeds += 1
-                    accepted, reasons = generate_level(seed, difficulty, args.attempts, args.search_limit, args.quality_profile)
+                    accepted, reasons = generate_legacy_level(seed, difficulty, args.attempts, args.search_limit, args.quality_profile)
                     exclusions.update(reasons)
                     attempted_drafts += sum(reasons.values()) + int(accepted is not None)
                     if accepted is None:
@@ -462,6 +497,17 @@ def main(argv=None):
         signal.alarm(0)
         persist()
     return 0
+
+
+def main(argv=None):
+    """Use resumable seven-tier generation unless historical mode is explicit."""
+    import sys
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if '--legacy' in arguments:
+        arguments.remove('--legacy')
+        return legacy_main(arguments)
+    from tools.regenerate_mechanism_banks import main as reference_main
+    return reference_main(arguments)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,7 @@
 """Verified live exploratory TRAIN clips, separate from policy and validation indices."""
 from collections import Counter
+from ..ls20.provenance import generated_context, difficulty_provenance
+
 import json
 import os
 from pathlib import Path
@@ -38,7 +40,7 @@ def prefixes(data):
         seen.add(seed)
         if (level.get('context_engine_verified') is not True
                 or level.get('search_truncated', False)
-                or level.get('context_index') != seed % 7):
+                or level.get('context_index') != generated_context(level)):
             raise ValueError('complete contextual proof required')
         start, stop = ranges[seed]
         count = level.get('explore_samples')

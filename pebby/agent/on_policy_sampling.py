@@ -4,7 +4,7 @@ from numbers import Integral
 
 import torch
 
-from .curriculum_sampling import CurriculumSampler, DIFFICULTIES
+from .curriculum_sampling import CurriculumSampler
 
 
 class OnPolicySampler(CurriculumSampler):
@@ -32,6 +32,8 @@ class OnPolicySampler(CurriculumSampler):
         if len(set(indices)) != len(indices):
             raise ValueError('on_policy_rows contains duplicate indices')
         policy = CurriculumSampler(supplemental, **kwargs)
+        if policy.difficulty_version != self.difficulty_version:
+            raise ValueError("base and supplemental difficulty versions differ")
         base_stage = {seed: stage for stage, seeds in self._levels_by_difficulty.items() for seed in seeds}
         for stage, seeds in policy._levels_by_difficulty.items():
             if any(base_stage.get(seed) != stage for seed in seeds):
@@ -43,7 +45,7 @@ class OnPolicySampler(CurriculumSampler):
                 raise ValueError('on-policy row is not a base training level')
             self._on_rows.setdefault(seed, []).append(index)
         self._on_levels = {stage: [s for s in self._levels_by_difficulty[stage] if s in self._on_rows]
-                           for stage in DIFFICULTIES}
+                           for stage in self.difficulties}
         auxiliary = supplemental['meta'].get('auxiliary_rows', [])
         if not isinstance(auxiliary, list) or any(type(i) is not int or not 0 <= i < len(supplemental['seeds']) for i in auxiliary):
             raise ValueError('auxiliary_rows contains invalid indices')
@@ -69,7 +71,7 @@ class OnPolicySampler(CurriculumSampler):
         super().check_coverage(batch_size)
         count = self.reserved_count(batch_size)
         required = torch.ceil(torch.maximum(self._start, self._end) * count).long()
-        for stage in DIFFICULTIES:
+        for stage in self.difficulties:
             if len(self._on_levels[stage]) < int(required[stage - 1]):
                 raise ValueError(f'on-policy difficulty {stage} needs {int(required[stage-1])} distinct levels, '
                                  f'has {len(self._on_levels[stage])}')
@@ -90,7 +92,7 @@ class OnPolicySampler(CurriculumSampler):
             reserved[best] += 1
         base_rows, policy_rows, base_seeds, policy_seeds = [], [], [], []
         auxiliary_count = 0
-        for stage in DIFFICULTIES:
+        for stage in self.difficulties:
             need = int(reserved[stage - 1])
             candidates = self._on_levels[stage]
             selected = [candidates[i] for i in torch.randperm(len(candidates), generator=generator)[:need].tolist()]
@@ -118,7 +120,7 @@ class OnPolicySampler(CurriculumSampler):
         order = torch.randperm(batch_size, generator=generator)
         self.last_level_seeds = tuple(chosen[i] for i in order.tolist())
         self.last_distinct_levels = len(chosen)
-        self.last_difficulty_counts = {stage: int(total[stage-1]) for stage in DIFFICULTIES}
+        self.last_difficulty_counts = {stage: int(total[stage-1]) for stage in self.difficulties}
         self.last_on_policy_count = len(policy_rows) - auxiliary_count
         self.last_auxiliary_count = auxiliary_count
         return torch.tensor(base_rows, dtype=torch.long), torch.tensor(policy_rows, dtype=torch.long), order

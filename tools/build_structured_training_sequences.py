@@ -1,4 +1,6 @@
 """Separate generated closing-K4 TRAIN field cache; final targets use real branches."""
+from pebby.ls20.provenance import metadata_difficulty_stages, cache_difficulty_metadata
+
 import argparse
 import json
 import os
@@ -33,7 +35,7 @@ def select_rows(data, index, count, seed=42):
         raise ValueError('requested count exceeds distinct closing levels')
     difficulty = {int(x['seed']): int(x['difficulty']) for x in data['meta']['levels']}
     rng = np.random.default_rng(seed)
-    groups = [list(rng.permutation(index.anchor_row[[difficulty[int(s)] == d for s in levels]])) for d in range(1, 6)]
+    groups = [list(rng.permutation(index.anchor_row[[difficulty[int(s)] == d for s in levels]])) for d in metadata_difficulty_stages(data['meta'])]
     selected = []
     while len(selected) < count:
         for group in groups:
@@ -145,14 +147,14 @@ def write_cache(data, index, out, assembler, provenance, source_hashes, count=8,
             inventory[path.stem] = dict(shape=list(value.shape), dtype=str(value.dtype), sha256=digest(path))
         all_labels = {key: np.asarray(data[key])[index.branch_rows, index.branch_actions]
                       for key in ('lost_life','terminal','won','distances')}
-        manifest = dict(format=FORMAT, status='complete', source='generated_only', split='train',
+        manifest = dict(**cache_difficulty_metadata(data['meta'], arrays['seeds']), format=FORMAT, status='complete', source='generated_only', split='train',
             mode='closing_only_chronological_K4', levels=count, field_encoder=provenance,
             source_hashes=source_hashes, source_index_metadata=index.meta, arrays=inventory,
             encoding_precision={'device':device,'compute_dtype':'float32','cache_dtype':'float16',
                                 'autocast':False,'tf32':False,'max_encoder_batch':batch_size},
             initial_source_mapping=initial_provenance,
             selection_seed=seed, selection='Difficulty round-robin from independently shuffled per-difficulty pools; no event enrichment. Redistributes exhausted difficulty quotas.',
-            difficulty_counts={str(d):int((arrays['difficulties']==d).sum()) for d in range(1,6)},
+            difficulty_counts={str(d):int((arrays['difficulties']==d).sum()) for d in metadata_difficulty_stages(data['meta'])},
             event_coverage=event_counts(arrays), available_index_event_coverage=event_counts(all_labels),
             current_zero_optimal=int((arrays['optimal']==0).sum()),
             next_zero_optimal_by_horizon=(arrays['next_optimal']==0).sum(0).tolist(),

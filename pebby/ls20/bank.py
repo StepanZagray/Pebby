@@ -29,6 +29,9 @@ def build(count, split="train", difficulties=DIFFICULTIES, workers=None, chunksi
     """Generate `count` levels, cycling through `difficulties`."""
     if split not in SPLIT_SEEDS:
         raise ValueError(f"split must be one of {sorted(SPLIT_SEEDS)}")
+    workers = 2 if workers is None else workers
+    if not 1 <= workers <= 2:
+        raise ValueError('seven-tier generation allows at most two workers; later tiers need large complete searches')
     base = SPLIT_SEEDS[split]
     jobs = [(base + i, difficulties[i % len(difficulties)]) for i in range(count)]
     with Pool(processes=workers) as pool:
@@ -65,7 +68,7 @@ def main():
     parser.add_argument("--levels", type=int, default=1000)
     parser.add_argument("--split", choices=sorted(SPLIT_SEEDS), default="train")
     parser.add_argument("--difficulties", type=int, nargs="+", default=list(DIFFICULTIES))
-    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--workers", type=int, choices=(1, 2), default=2)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.levels < 1:

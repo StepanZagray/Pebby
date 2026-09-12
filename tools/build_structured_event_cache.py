@@ -15,6 +15,8 @@ sequence without a separate trajectory collector.
 
 from __future__ import annotations
 
+from pebby.ls20.provenance import generated_context, validate_difficulty, row_contexts, cache_difficulty_metadata
+
 import argparse
 import hashlib
 import json
@@ -202,7 +204,7 @@ def _level_index(meta):
             raise ValueError(f"duplicate level proof for seed {seed}")
         if level.get("context_engine_verified") is not True:
             raise ValueError(f"seed {seed} lacks contextual engine verification")
-        if level.get("context_index") != seed % 7:
+        if level.get("context_index") != generated_context(level):
             raise ValueError(f"seed {seed} has wrong context index")
         if not isinstance(level.get("difficulty"), (int, np.integer)):
             raise ValueError(f"seed {seed} lacks difficulty")
@@ -275,11 +277,11 @@ def load_event_source(source, report, split):
     selected = report_data.get("sources", {}).get(split, {}).get("selected", [])
     if not set(map(int, seeds)) <= set(map(int, selected)):
         raise ValueError("event rows are outside the collector's selected split levels")
-    if np.any(data["context_index"][rows] != (seeds % 7)):
+    if np.any(data["context_index"][rows] != row_contexts(seeds, proofs.values())):
         raise ValueError("row context index mismatch")
     difficulties = np.asarray([int(proofs[int(seed)]["difficulty"]) for seed in seeds], dtype=np.int8)
-    if not bool(((difficulties >= 1) & (difficulties <= 5)).all()):
-        raise ValueError("difficulty outside 1..5")
+    for proof in proofs.values():
+        validate_difficulty(proof)
     return {name: value[rows] for name, value in data.items()} | {
         "seeds": seeds.astype(np.int64, copy=True),
         "difficulties": difficulties,
@@ -398,6 +400,7 @@ def build_split(source, report, out, world, visibility, split, *, batch_size=8,
             inventory[name] = {"shape": list(loaded.shape), "dtype": str(loaded.dtype),
                                "sha256": digest(path)}
         manifest = {
+            **cache_difficulty_metadata(data["meta"], data["seeds"]),
             "format": FORMAT, "status": "complete", "source": "generated_only", "split": split,
             "rows": len(data["seeds"]), "levels": int(len(np.unique(data["seeds"]))),
             "history": HISTORY, "alternatives_per_state": ACTION_COUNT,

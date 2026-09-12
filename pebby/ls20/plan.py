@@ -243,17 +243,18 @@ class Oracle:
         """Fewest actions needed from the start, or None if unsolvable."""
         return self._distance.get(self.start)
 
-    def action_for(self, state):
-        """Best action index (0..3) from a planner state, or None if hopeless."""
-        best, choice = self._distance.get(state), None
+    def action_for(self, state, *, seed=None):
+        """Optimal action index; optional seed chooses reproducibly among ties."""
+        best, choices = self._distance.get(state), []
         if best is None:
             return None
         for action in range(4):
             nxt = advance(self.layout, state, action, self.refills)
             if nxt is not None and self._distance.get(nxt, 1 << 30) == best - 1:
-                choice = action
-                break
-        return choice
+                choices.append(action)
+        if not choices:
+            return None
+        return choices[0] if seed is None else random.Random(repr((seed, state))).choice(choices)
 
     def distance_for(self, state):
         return self._distance.get(state)
@@ -304,9 +305,15 @@ class Oracle:
         return (env.player_cell(), *env.triple(), goals, taken, env.steps_left(),
                 0 if tick is None else tick)
 
-    def action_at(self, env):
-        """Optimal action id (1..4) from the game's current state, or None."""
-        action = self.action_for(self.state_of(env))
+    def action_at(self, env, *, seed=None):
+        """Optimal live action with stable, level/state-specific tie variation.
+
+        Historical unseeded ``solution()`` exports keep their original order;
+        interactive advice and sampled single actions no longer prefer up.
+        """
+        if seed is None:
+            seed = repr((self.layout.start_cell, self.layout.start_triple, self.layout.goals))
+        action = self.action_for(self.state_of(env), seed=seed)
         return None if action is None else names.ACTION_IDS[action]
 
 

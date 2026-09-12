@@ -16,20 +16,17 @@
   const TRAJECTORY_CONCURRENCY = 6;
   const AUTOPLAY_DELAY = 260;
   const SCRUB_DEBOUNCE = 90;
+  const PAGE_SIZE = 50;
 
   const KEY_ACTIONS = { ArrowUp: 1, ArrowDown: 2, ArrowLeft: 3, ArrowRight: 4 };
+  const SOURCES = ["bank", "generate", "shipped"];
+  // A level's kind names where it came from; a pane is where you ask for one.
+  const PANE_OF_KIND = { bank: "bank", generated: "generate", shipped: "shipped" };
   const STATE_WORDS = {
     NOT_PLAYED: ["Ready", ""],
     NOT_FINISHED: ["Playing", ""],
     WIN: ["Completed", "good"],
     GAME_OVER: ["Game over", "bad"],
-  };
-  const DIFFICULTY_WORDS = {
-    1: "1 — one attribute, sparse walls",
-    2: "2 — two attributes, a decoy cycler",
-    3: "3 — three attributes, a launcher",
-    4: "4 — refills, 2 budget per move",
-    5: "5 — two goals, two launchers",
   };
   const CYCLER_WORDS = { shape: "shape", color: "colour", rotation: "rotation" };
 
@@ -37,15 +34,19 @@
     info: null,
     level: null,
     source: null,       // {kind:"generated", seed, difficulty} | {kind:"shipped", index}
+    banks: [],
+    bankPage: null,
     actions: [],
     frame: null,
     status: null,
     revision: 0,
     busy: false,
+    pending: null,      // which section asked for the request in flight
     trajectory: null,   // {level, cells, frames, statuses}
     trajectoryPending: false,
     autoplay: null,     // identity token for the running solution playback
     overlays: { lattice: false, features: true, route: false },
+    bannerOff: false,   // the finish card was dismissed for the run on screen
   };
 
   let infer = null;
@@ -53,8 +54,18 @@
   const ids = [
     "transport", "model", "level-title", "game-state", "board", "board-overlay",
     "board-summary", "action-count", "ov-lattice", "ov-features", "ov-route",
-    "source-fields", "seed", "difficulty", "prev-seed", "generate", "next-seed",
-    "random-seed", "shipped", "load-shipped", "source-error", "facts", "features",
+    "board-wrap", "board-banner", "banner-mark", "banner-title", "banner-sub",
+    "banner-primary", "banner-dismiss",
+    "level-panel", "level-working", "level-error",
+    "src-bank", "src-generate", "src-shipped",
+    "pane-bank", "pane-generate", "pane-shipped",
+    "gen-fields", "seed", "roll-seed", "difficulty",
+    "generate", "generate-label", "prev-seed", "next-seed", "gen-hint",
+    "shipped-fields", "shipped", "load-shipped", "load-shipped-label",
+    "bank-fields", "bank", "bank-field", "bank-summary",
+    "bank-split", "bank-difficulty", "bank-level", "load-bank", "load-bank-label",
+    "refresh-bank", "bank-prev", "bank-next", "bank-page",
+    "facts", "features",
     "solution-summary", "scrub", "solution-play", "solution-end", "solution-note",
     "undo", "reset", "carried-swatch", "carried", "goals", "live", "status",
   ];
@@ -177,6 +188,7 @@
     renderAnatomy();
     renderSolution();
     renderStatus();
+    renderBanner();
     renderControls();
   }
 
@@ -186,9 +198,12 @@
       el["level-title"].textContent = "No level";
     } else if (source.kind === "shipped") {
       el["level-title"].textContent = "Shipped level " + (source.index + 1);
+    } else if (source.kind === "bank") {
+      el["level-title"].textContent = "Bank · seed " + state.level.seed +
+        " · tier " + state.level.difficulty;
     } else {
       el["level-title"].textContent = "Generated · seed " + source.seed +
-        " · difficulty " + source.difficulty;
+        " · tier " + source.difficulty;
     }
     el["action-count"].textContent = state.actions.length +
       (state.actions.length === 1 ? " action" : " actions");
@@ -205,7 +220,7 @@
     const status = state.status;
     const fog = level.fog !== undefined ? level.fog : (status ? status.fog : undefined);
     facts(el.facts, [
-      ["Difficulty", shipped ? "—" : level.difficulty],
+      ["Tier", shipped ? "—" : level.difficulty],
       ["Seed", shipped ? "—" : level.seed],
       ["Step budget", level.step_counter],
       ["Cost per move", level.step_cost !== undefined ? level.step_cost
@@ -355,9 +370,149 @@
       open + " goals open. " + status.steps_left + " steps left, " + status.lives + " lives.";
   }
 
+  /* What comes after the level on screen, or null when nothing does.
+
+     "Next" means the next one in the source this level came from: the next row
+     of the bank listing as it is filtered right now, or the next seed at the
+     same tier. The shipped campaign advances inside its own replay — finishing
+     level 3 rolls straight into level 4 without a win — so a win there is the
+     end of the campaign and there is nothing after it. */
+  function nextSource() {
+    const source = state.source;
+    if (!source || !state.info) return null;
+    if (source.kind === "generated") {
+      return source.seed >= state.info.max_seed ? null
+        : { kind: "generated", seed: source.seed + 1, difficulty: source.difficulty };
+    }
+    if (source.kind !== "bank") return null;
+    const page = state.bankPage;
+    if (!page || !page.levels.length) return null;
+    const at = page.levels.findIndex(function (row) { return row.id === source.id; });
+    if (at >= 0) {
+      if (at + 1 < page.levels.length) {
+        return { kind: "bank", bank: page.bank, id: page.levels[at + 1].id };
+      }
+      return page.offset + page.levels.length < page.total
+        ? { kind: "bank-page", bank: page.bank, offset: page.offset + page.levels.length }
+        : null;
+    }
+    // No row matches: the listing moved on while this level was being played, a
+    // filter changed or a page turned. What is on screen now is the sequence.
+    return { kind: "bank", bank: page.bank, id: page.levels[0].id };
+  }
+
+  async function goNextLevel() {
+    const next = nextSource();
+    if (!next || state.busy) return;
+    state.bannerOff = true;   // the card has been answered; the next board is the reply
+    renderBanner();
+    if (next.kind === "bank-page") {
+      await browseBank(next.offset, false);
+      const page = state.bankPage;
+      if (!page || !page.levels.length) return;
+      el["bank-level"].value = page.levels[0].id;
+      await load({ kind: "bank", bank: page.bank, id: page.levels[0].id });
+      return;
+    }
+    if (next.kind === "bank") {
+      el["bank-level"].value = next.id;
+      await load(next);
+      return;
+    }
+    el.difficulty.value = String(next.difficulty);
+    await generateAt(next.seed);
+  }
+
+  /* The finish card. A run ends rarely but matters every time, so the end of it
+     is announced over the board itself rather than only in the corner pill. It
+     is dismissible: the coloured frame stays behind it as the quiet reminder. */
+  function renderBanner() {
+    const status = state.status;
+    const won = Boolean(status) && status.state === "WIN";
+    const over = Boolean(status) && status.state === "GAME_OVER";
+    el["board-wrap"].classList.toggle("is-win", won);
+    el["board-wrap"].classList.toggle("is-over", over);
+    el["board-banner"].classList.toggle("is-over", over);
+
+    if (!won && !over) {
+      state.bannerOff = false;  // the next finish is a fresh event worth showing
+      el["board-banner"].hidden = true;
+      return;
+    }
+    if (state.bannerOff) {
+      el["board-banner"].hidden = true;
+      return;
+    }
+
+    const source = state.source;
+    const named = Boolean(source) && source.kind !== "shipped" && Boolean(state.level);
+    const moves = state.actions.length + (state.actions.length === 1 ? " action" : " actions");
+    el["banner-mark"].textContent = won ? "\u2713" : "\u2715";
+    el["banner-title"].textContent = won ? "Level complete" : "Game over";
+    if (won) {
+      el["banner-sub"].textContent = "Solved in " + moves +
+        (named ? " · seed " + state.level.seed + " · tier " + state.level.difficulty : "");
+    } else {
+      el["banner-sub"].textContent = (status.lives ? "Out of steps" : "No lives left") +
+        " after " + moves + ".";
+    }
+    el["banner-primary"].textContent = !won ? "Try again"
+      : nextSource() ? "Next level" : "Play again";
+    el["banner-dismiss"].textContent = won ? "Stay here" : "Dismiss";
+    el["board-banner"].hidden = false;
+  }
+
+  /* A level takes a round trip to build, so the panel that asked for it says so
+     while it works. Only an unusable page dims; a working one stays readable. */
+  function renderWork() {
+    const pending = state.pending;
+    // Playing a move is not level work, so it leaves the panel alone.
+    const working = pending === "generate" || pending === "shipped" || pending === "bank";
+    el["level-panel"].classList.toggle("is-working", working);
+    el["level-panel"].classList.toggle("offline", !state.info);
+    el["level-panel"].setAttribute("aria-busy", working ? "true" : "false");
+    el["level-working"].textContent = pending === "generate" ? "generating…" : "loading…";
+    el["level-working"].hidden = !working;
+    el["generate-label"].textContent = pending === "generate" ? "Generating…" : "Generate";
+    el["load-shipped-label"].textContent = pending === "shipped" ? "Loading…" : "Load level";
+    el["load-bank-label"].textContent = pending === "bank" ? "Loading…" : "Load level";
+  }
+
+  /* The three sources differ only in where a level comes from, so they share a
+     panel and only the chosen one is on show. */
+  function showSource(name) {
+    SOURCES.forEach(function (source) {
+      el["src-" + source].checked = source === name;
+      el["pane-" + source].hidden = source !== name;
+    });
+  }
+
+  // The seed and difficulty boxes only state an intent; this says so whenever
+  // they have drifted from the level actually on the board.
+  function renderGenHint() {
+    const source = state.source;
+    let dirty = false;
+    // Mid-request the boxes already describe the level being built, so asking
+    // for another press would be wrong.
+    if (state.info && state.pending !== "generate" && source && source.kind === "generated") {
+      const seed = readSeed();
+      dirty = seed !== source.seed || currentDifficulty() !== source.difficulty;
+    }
+    el["gen-hint"].hidden = !dirty;
+    el.generate.classList.toggle("dirty", dirty);
+  }
+
   function renderControls() {
     const ready = Boolean(state.info) && !state.busy;
-    el["source-fields"].disabled = !ready;
+    el["gen-fields"].disabled = !ready;
+    el["shipped-fields"].disabled = !ready;
+    el["bank-fields"].disabled = !ready;
+    const page = state.bankPage;
+    el["load-bank"].disabled = !page || !page.levels.length;
+    el["bank-prev"].disabled = !page || page.offset === 0;
+    el["bank-next"].disabled = !page || page.offset + page.levels.length >= page.total;
+    renderWork();
+    renderGenHint();
     const playable = ready && Boolean(state.level) && state.status && !state.status.finished;
     document.querySelectorAll(".pad").forEach(function (button) {
       button.disabled = !playable;
@@ -373,7 +528,7 @@
     info.difficulties.forEach(function (value) {
       const option = document.createElement("option");
       option.value = String(value);
-      option.textContent = DIFFICULTY_WORDS[value] || String(value);
+      option.textContent = "Tier " + value;
       if (value === 3) option.selected = true;
       el.difficulty.append(option);
     });
@@ -381,40 +536,70 @@
     for (let index = 0; index < info.shipped_levels; index += 1) {
       const option = document.createElement("option");
       option.value = String(index);
-      option.textContent = "Level " + (index + 1);
+      option.textContent = String(index + 1);
       el.shipped.append(option);
     }
     el.seed.max = String(info.max_seed);
+    el["bank-difficulty"].replaceChildren(new Option("All tiers", ""));
+    info.difficulties.forEach(function (value) {
+      el["bank-difficulty"].append(new Option("Tier " + value, String(value)));
+    });
+    showSource("bank");
   }
 
   /* ---- operations ---- */
 
+  // One slot under the panel: only one source is ever on show, so the error is
+  // always beneath the control that caused it.
   function showError(message) {
-    el["source-error"].textContent = message;
-    el["source-error"].hidden = false;
+    el["level-error"].textContent = message;
+    el["level-error"].hidden = false;
   }
 
   function clearError() {
-    el["source-error"].hidden = true;
+    el["level-error"].hidden = true;
   }
 
-  async function withBusy(work) {
+  async function withBusy(kind, work) {
     state.busy = true;
+    state.pending = kind;
     renderControls();
     try {
       return await work();
     } finally {
       state.busy = false;
+      state.pending = null;
       renderControls();
     }
   }
 
+  /* Take a level result onto the board. load() gets one by asking; boot already
+     has one in hand, and neither needs to know how the other got there. */
+  function adoptLevel(source, result) {
+    state.revision += 1;
+    state.source = source;
+    state.level = result.level;
+    state.frame = result.frame;
+    state.status = result.status;
+    state.actions = [];
+    state.trajectory = null;
+    state.trajectoryPending = false;
+    el.scrub.value = 0;
+    el.status.textContent = source.kind === "shipped"
+      ? "Loaded shipped level " + (source.index + 1) + "."
+      : source.kind === "bank" ? "Loaded accepted " + result.level.split + " level · seed " +
+        result.level.seed + " · " + (result.bank_status === "complete" ? "complete bank." : "partial bank.")
+        : "Generated seed " + source.seed + " at tier " + source.difficulty + ".";
+  }
+
   async function load(source) {
     stopAutoplay();
-    await withBusy(async function () {
+    showSource(PANE_OF_KIND[source.kind]);
+    await withBusy(source.kind === "generated" ? "generate" : source.kind, async function () {
       const request = source.kind === "shipped"
         ? { op: "shipped", index: source.index }
-        : { op: "generate", seed: source.seed, difficulty: source.difficulty };
+        : source.kind === "bank" ? { op: "bank_level", bank: source.bank, id: source.id }
+          : { op: "generate", seed: source.seed, difficulty: source.difficulty };
       let result;
       try {
         result = await infer(request);
@@ -424,18 +609,7 @@
         return;
       }
       clearError();
-      state.revision += 1;
-      state.source = source;
-      state.level = result.level;
-      state.frame = result.frame;
-      state.status = result.status;
-      state.actions = [];
-      state.trajectory = null;
-      state.trajectoryPending = false;
-      el.scrub.value = 0;
-      el.status.textContent = source.kind === "shipped"
-        ? "Loaded shipped level " + (source.index + 1) + "."
-        : "Generated seed " + source.seed + " at difficulty " + source.difficulty + ".";
+      adoptLevel(source, result);
     });
     render();
     if (state.overlays.route) ensureTrajectory();
@@ -454,7 +628,7 @@
       render();
       return;
     }
-    await withBusy(async function () {
+    await withBusy("play", async function () {
       let result;
       try {
         result = await infer({ op: "play", level: level, actions: actions });
@@ -541,6 +715,11 @@
     state.autoplay = null;
   }
 
+  function dismissBanner() {
+    state.bannerOff = true;
+    renderBanner();
+  }
+
   async function playSolution() {
     if (state.autoplay) {
       stopAutoplay();
@@ -573,6 +752,75 @@
 
   /* ---- wiring ---- */
 
+  /* Showing a page and fetching one are separate jobs: the opening screen
+     arrives with its first page already inside the boot response, so it renders
+     without asking for anything. */
+  function showBankPage(page) {
+    state.bankPage = page;
+    el["bank-level"].replaceChildren();
+    page.levels.forEach(function (level) {
+      el["bank-level"].append(new Option("Seed " + level.seed + " · tier " + level.difficulty +
+        " · " + level.optimal_actions + " actions", level.id));
+    });
+    el["bank-page"].textContent = page.total
+      ? (page.offset + 1) + "–" + (page.offset + page.levels.length) + " of " + page.total.toLocaleString() + " accepted levels"
+      : "No accepted levels match these filters yet. Refresh as generation progresses.";
+  }
+
+  async function fetchBankPage(offset) {
+    const bank = el.bank.value;
+    state.bankPage = null;
+    el["bank-level"].replaceChildren();
+    el["bank-page"].textContent = "";
+    if (!bank) return;
+    const request = { op: "bank_levels", bank: bank, split: el["bank-split"].value,
+      offset: offset, limit: PAGE_SIZE };
+    if (el["bank-difficulty"].value) request.difficulty = Number(el["bank-difficulty"].value);
+    showBankPage(await infer(request));
+  }
+
+  function showBanks(banks) {
+    const selected = el.bank.value;
+    state.banks = banks;
+    el.bank.replaceChildren();
+    banks.forEach(function (bank) {
+      el.bank.append(new Option(bank.label, bank.id, false, bank.id === selected));
+    });
+    // One bank is the usual case, and a chooser with one entry is noise.
+    el["bank-field"].hidden = state.banks.length < 2;
+  }
+
+  function describeBank() {
+    const bank = state.banks.find(function (item) { return item.id === el.bank.value; });
+    el["bank-summary"].textContent = bank
+      ? bank.label + " · " +
+        (bank.status === "complete" ? "complete" : bank.status === "unavailable" ? "unavailable" : "partial") +
+        " · " + (bank.accepted.train + bank.accepted.validation).toLocaleString() + " accepted levels"
+      : "No generated banks are available yet.";
+  }
+
+  async function browseBank(offset, refresh) {
+    if (state.busy) return;
+    await withBusy("bank", async function () {
+      clearError();
+      try {
+        if (refresh) showBanks((await infer({ op: "banks" })).banks);
+        describeBank();
+        await fetchBankPage(offset);
+      } catch (error) {
+        state.bankPage = null;
+        el["bank-level"].replaceChildren();
+        el["bank-page"].textContent = "Levels could not be loaded. Try Refresh.";
+        showError(String(error.message || error));
+      }
+    });
+  }
+
+  async function loadAcceptedLevel() {
+    if (!el["bank-level"].value || state.busy) return;
+    await load({ kind: "bank", bank: el.bank.value, id: el["bank-level"].value });
+  }
+
   // Generate reports a bad seed instead of clamping it, so a typo is visible
   // rather than quietly answering about a different level.
   function readSeed() {
@@ -594,12 +842,42 @@
     return Number(el.difficulty.value) || 1;
   }
 
+  function randomSeed() {
+    return Math.floor(Math.random() * (state.info.max_seed + 1));
+  }
+
   function generateAt(seed) {
     el.seed.value = String(seed);
+    renderGenHint();
     return load({ kind: "generated", seed: seed, difficulty: currentDifficulty() });
   }
 
   function wire() {
+    SOURCES.forEach(function (name) {
+      el["src-" + name].addEventListener("change", function () {
+        if (el["src-" + name].checked) showSource(name);
+      });
+    });
+    el["refresh-bank"].addEventListener("click", function () { browseBank(0, true); });
+    ["bank", "bank-split", "bank-difficulty"].forEach(function (id) {
+      el[id].addEventListener("change", function () { browseBank(0, false); });
+    });
+    el["load-bank"].addEventListener("click", loadAcceptedLevel);
+    el["bank-prev"].addEventListener("click", function () {
+      if (state.bankPage) browseBank(Math.max(0, state.bankPage.offset - PAGE_SIZE), false);
+    });
+    el["bank-next"].addEventListener("click", function () {
+      if (state.bankPage) browseBank(state.bankPage.offset + PAGE_SIZE, false);
+    });
+    // The die only fills the box. Nothing in this panel fetches a level except
+    // the buttons under it, so a stray click never replaces what you are reading.
+    el["roll-seed"].addEventListener("click", function () {
+      if (!state.info) return;
+      el.seed.value = String(randomSeed());
+      renderGenHint();
+      el.seed.focus();
+      el.seed.select();
+    });
     el.generate.addEventListener("click", function () {
       const seed = readSeed();
       if (seed === null) {
@@ -610,12 +888,30 @@
     });
     el["prev-seed"].addEventListener("click", function () { generateAt(steppedSeed(-1)); });
     el["next-seed"].addEventListener("click", function () { generateAt(steppedSeed(1)); });
-    el["random-seed"].addEventListener("click", function () {
-      generateAt(Math.floor(Math.random() * (state.info.max_seed + 1)));
+    el.seed.addEventListener("input", renderGenHint);
+    el.seed.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      el.generate.click();
     });
-    el.difficulty.addEventListener("change", function () { generateAt(steppedSeed(0)); });
+    el.difficulty.addEventListener("change", renderGenHint);
     el["load-shipped"].addEventListener("click", function () {
       load({ kind: "shipped", index: Number(el.shipped.value) || 0 });
+    });
+
+    el["banner-primary"].addEventListener("click", function () {
+      const status = state.status;
+      if (status && status.state === "WIN" && nextSource()) {
+        goNextLevel();
+        return;
+      }
+      state.bannerOff = true;
+      stopAutoplay();
+      commit([]);
+    });
+    el["banner-dismiss"].addEventListener("click", dismissBanner);
+    el["board-banner"].addEventListener("click", function (event) {
+      if (event.target === el["board-banner"]) dismissBanner();
     });
 
     document.querySelectorAll(".pad").forEach(function (button) {
@@ -669,11 +965,24 @@
 
     document.addEventListener("keydown", function (event) {
       if (event.altKey || event.ctrlKey || event.metaKey) return;
-      const action = KEY_ACTIONS[event.key];
-      if (!action) return;
       const target = event.target;
-      if (target && target.closest &&
-          target.closest("input, select, textarea, [contenteditable], dialog")) return;
+      const inField = Boolean(target && target.closest &&
+        target.closest("input, select, textarea, [contenteditable], dialog"));
+      if (!el["board-banner"].hidden) {
+        if (event.key === "Escape") {
+          dismissBanner();
+          return;
+        }
+        // Enter takes the card's offer, so a finished level is one key from the
+        // next one. A focused button answers for itself.
+        if (event.key === "Enter" && !inField && (!target || target.tagName !== "BUTTON")) {
+          event.preventDefault();
+          el["banner-primary"].click();
+          return;
+        }
+      }
+      const action = KEY_ACTIONS[event.key];
+      if (!action || inField) return;
       event.preventDefault();
       stopAutoplay();
       move(action);
@@ -686,24 +995,43 @@
 
   /* ---- start ---- */
 
+  /* One request paints the opening screen.
+
+     This used to be four, each waiting on the one before it: info, then banks,
+     then the first page of rows, then that row's level. Only the last two are
+     genuinely dependent, and the server can follow that chain itself without
+     paying for a round trip between each link. */
   async function start() {
     bind();
     wire();
+    let boot;
     try {
       await connect();
-      state.info = await infer({ op: "info" });
+      boot = await infer({ op: "boot", limit: PAGE_SIZE });
     } catch (error) {
       el.transport.textContent = "Disconnected";
       el.transport.className = "pill bad";
       el.status.textContent = "Could not reach the model: " + (error.message || error);
       return;
     }
+    state.info = boot.info;
     el.model.textContent = MODEL + " · " + state.info.game + " · " + state.info.ruleset;
     fillMenus();
     el["ov-lattice"].checked = state.overlays.lattice;
     el["ov-features"].checked = state.overlays.features;
     el["ov-route"].checked = state.overlays.route;
-    await load({ kind: "generated", seed: 7, difficulty: 3 });
+    showBanks(boot.banks);
+    describeBank();
+    if (boot.page) showBankPage(boot.page);
+    if (!boot.level) {
+      // An empty or unreadable bank still deserves something to play.
+      await load({ kind: "generated", seed: 7, difficulty: 3 });
+      return;
+    }
+    el["bank-level"].value = boot.level.id;
+    adoptLevel({ kind: "bank", bank: boot.page.bank, id: boot.level.id }, boot.level);
+    render();
+    if (state.overlays.route) ensureTrajectory();
   }
 
   if (document.readyState === "loading") {

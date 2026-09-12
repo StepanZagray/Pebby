@@ -5,6 +5,8 @@ prefixes and cannot enter FourStepSampler. No engine, rendering or teacher searc
 """
 from collections import Counter
 from dataclasses import dataclass
+from ..ls20.provenance import generated_context, difficulty_provenance
+
 import json
 from pathlib import Path
 
@@ -69,7 +71,7 @@ def _prefix_rows(data,mode):
         seed=int(level['seed'])
         if seed in seen:raise ValueError('duplicate sequence level proof')
         seen.add(seed)
-        if level.get('context_engine_verified') is not True or level.get('search_truncated',False) or level.get('context_index')!=seed%7:
+        if level.get('context_engine_verified') is not True or level.get('search_truncated',False) or level.get('context_index')!=generated_context(level):
             raise ValueError('sequence level lacks complete contextual proof')
         rows=np.flatnonzero(seeds==seed)
         if not len(rows) or np.any(np.diff(rows)!=1):raise ValueError('level rows are not contiguous')

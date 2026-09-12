@@ -3,8 +3,11 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+from hostai import MAX_ASSET_BYTES, ContractError
 
 from inference import MAX_ACTIONS, Engine
 from serve import MAX_BODY, make_server
@@ -14,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # One request per operation, all cheap: shipped levels build instantly and the
 # oracle for level 1 is cached inside inference after the first plan.
 OPERATIONS = {
+    "boot": {"op": "boot"},
     "info": {"op": "info"},
     "shipped": {"op": "shipped", "index": 3},
     "generate": {"op": "generate", "seed": 3, "difficulty": 1},
@@ -27,7 +31,9 @@ OPERATIONS = {
 class ServeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.engine = Engine(None)
+        cls.checkpoint_dir = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.checkpoint_dir.cleanup)
+        cls.engine = Engine(str(Path(cls.checkpoint_dir.name) / "absent.pt"))
         cls.server = make_server(cls.engine, 0)
         cls.thread = threading.Thread(target=cls.server.serve_forever)
         cls.thread.start()
@@ -71,7 +77,24 @@ class ServeTests(unittest.TestCase):
         self.assertEqual(manifest["runtime"], "pebby")
         self.assertEqual(manifest["ui"], {"entry": "/ui/index.html"})
         [model] = manifest["models"]
-        self.assertEqual(set(model), {"name", "sizeBytes", "parameterSize", "quantization", "modifiedAt"})
+        self.assertEqual(
+            set(model),
+            {
+                "name",
+                "sizeBytes",
+                "parameterSize",
+                "quantization",
+                "modifiedAt",
+                "capabilities",
+                "interaction",
+            },
+        )
+        self.assertEqual(model["capabilities"], {"chat": False, "infer": True})
+        self.assertEqual(
+            set(model["interaction"]), {"instructions", "inputSchema", "outputSchema", "examples"}
+        )
+        self.assertTrue(model["interaction"]["instructions"])
+        self.assertEqual(model["interaction"]["inputSchema"]["required"], ["op"])
         self.assertEqual(model["name"], "pebby:latest")
         self.assertEqual(model["quantization"], "F32")
         # Nothing is trained, so the manifest advertises weightless zeroes rather
@@ -79,124 +102,255 @@ class ServeTests(unittest.TestCase):
         self.assertFalse(self.engine.agent.loaded)
         self.assertEqual(model["sizeBytes"], 0)
         self.assertEqual(model["parameterSize"], "0")
-        self.assertRegex(model["modifiedAt"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00$")
+        self.assertRegex(
+            model["modifiedAt"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00$"
+        )
 
     def test_every_operation_matches_the_engine_on_both_routes(self):
         for name, request in OPERATIONS.items():
             with self.subTest(op=name):
                 expected = json.loads(json.dumps(self.engine.dispatch(request)))
                 self.assertEqual(self.post("/predict", request), expected)
-                self.assertEqual(self.post("/hostai/infer",
-                                           {"model": "pebby:latest", "input": request}), expected)
+                self.assertEqual(
+                    self.post("/hostai/infer", {"model": "pebby:latest", "input": request}),
+                    expected,
+                )
 
     def test_replies_are_never_cached(self):
         for path in ("/health", "/hostai/manifest", "/ui/index.html", "/ui/hostai-bridge.js"):
             with self.subTest(path=path):
                 _, headers, _ = self.get(path)
                 self.assertEqual(headers["Cache-Control"], "no-store")
-        request = Request(self.origin + "/predict", json.dumps({"op": "info"}).encode(),
-                          {"Content-Type": "application/json"})
+        request = Request(
+            self.origin + "/predict",
+            json.dumps({"op": "info"}).encode(),
+            {"Content-Type": "application/json"},
+        )
         with urlopen(request, timeout=10) as response:
             self.assertEqual(response.headers["Cache-Control"], "no-store")
         with self.assertRaises(HTTPError) as error:
             self.post("/predict", {"op": "nope"})
         self.assertEqual(error.exception.headers["Cache-Control"], "no-store")
 
-    def test_rejects_bad_requests_with_400(self):
-        spec = {"op": "play", "level": {"shipped": 0}}
-        # Every engine ValueError reaches the client as its own sentence: the UI
-        # shows these verbatim, so they are part of the contract.
+    def test_both_routes_accept_all_seven_generation_tiers(self):
+        expected = {"level": {}, "frame": [], "status": {}}
+        for difficulty in range(1, 8):
+            body = {"op": "generate", "seed": 930000 + difficulty, "difficulty": difficulty}
+            for route, request in (("/predict", body),
+                                   ("/hostai/infer", {"model": "pebby:latest", "input": body})):
+                with self.subTest(difficulty=difficulty, route=route):
+                    with patch.object(self.engine, "dispatch", return_value=expected) as dispatch:
+                        self.assertEqual(self.post(route, request), expected)
+                        dispatch.assert_called_once_with(body)
+
+    def test_rejects_schema_invalid_inputs_on_both_routes(self):
         cases = [
-            ("unknown op", "/predict", {"op": "nope"}, "Unknown operation or unexpected fields."),
-            ("no op", "/predict", {"level": {"shipped": 0}}, 'Request must contain a string "op".'),
-            ("not an object", "/predict", [1, 2], "Request must be a JSON object."),
-            ("extra field", "/predict", {"op": "info", "extra": 1},
-             "Unknown operation or unexpected fields."),
-            ("no level", "/predict", {"op": "play"}, "level is required."),
-            ("bad shipped index", "/predict", {"op": "shipped", "index": 7},
-             "shipped must be an integer between 0 and 6."),
-            ("bad seed", "/predict", {"op": "generate", "seed": -1},
-             "seed must be an integer between 0 and 4294967295."),
-            ("bad difficulty", "/predict", {"op": "generate", "difficulty": 6},
-             "difficulty must be one of [1, 2, 3, 4, 5]."),
-            ("bad level", "/predict", {"op": "play", "level": {"shipped": 0, "extra": 1}},
-             'A shipped level is exactly {"shipped": index}.'),
-            ("bad action", "/predict", {**spec, "actions": [5]},
-             "Each action must be one of [1, 2, 3, 4]."),
-            ("malformed json", "/predict", b'{"op": "info"', None),
-            ("not utf-8", "/predict", b'{"op": "\xff\xfe"}', None),
-            ("wrong model", "/hostai/infer", {"model": "llama3", "input": {"op": "info"}},
-             "model must be pebby:latest."),
-            ("no model", "/hostai/infer", {"input": {"op": "info"}}, "model must be pebby:latest."),
-            ("envelope not an object", "/hostai/infer", [], "model must be pebby:latest."),
-            ("no input", "/hostai/infer", {"model": "pebby:latest"}, "Request must contain input."),
-            ("input not an object", "/hostai/infer", {"model": "pebby:latest", "input": "info"},
-             "Request must be a JSON object."),
+            {"op": "nope"},
+            {"level": {"shipped": 0}},
+            [1, 2],
+            {"op": "info", "extra": 1},
+            {"op": "play"},
+            {"op": "shipped", "index": 7},
+            {"op": "generate", "seed": -1},
+            {"op": "generate", "difficulty": 8},
+            {"op": "play", "level": {"shipped": 0}, "actions": [5]},
+            "info",
         ]
-        for name, path, body, message in cases:
-            with self.subTest(case=name):
-                error = self.assert_status(400, path, body)
-                self.assertIsInstance(error["error"], str)
-                if message is not None:
-                    self.assertEqual(error["error"], message)
+        for body in cases:
+            for path, request in [
+                ("/predict", body),
+                ("/hostai/infer", {"model": "pebby:latest", "input": body}),
+            ]:
+                with self.subTest(path=path, body=body):
+                    error = self.assert_status(400, path, request)
+                    self.assertEqual(set(error), {"error"})
+                    self.assertTrue(
+                        error["error"].startswith("input does not conform to the input schema:"),
+                        error,
+                    )
+
+    def test_domain_input_errors_keep_their_message_on_both_routes(self):
+        body = {"op": "play", "level": {"shipped": 0, "extra": 1}}
+        for path, request in [
+            ("/predict", body),
+            ("/hostai/infer", {"model": "pebby:latest", "input": body}),
+        ]:
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self.assert_status(400, path, request),
+                    {"error": 'A shipped level is exactly {"shipped": index}.'},
+                )
+
+    def test_rejects_bad_json_and_envelopes(self):
+        for path in ("/predict", "/hostai/infer"):
+            for body in (b'{"op": "info"', b'{"op": "\xff\xfe"}'):
+                with self.subTest(path=path, body=body):
+                    self.assertEqual(
+                        self.assert_status(400, path, body),
+                        {"error": "request body is not valid JSON"},
+                    )
+        for body in (
+            [],
+            {"input": {"op": "info"}},
+            {"model": "pebby:latest"},
+            {"model": "pebby:latest", "input": {"op": "info"}, "extra": True},
+        ):
+            with self.subTest(body=body):
+                self.assertEqual(
+                    self.assert_status(400, "/hostai/infer", body),
+                    {
+                        "error": 'request body must be a JSON object with exactly the keys "model" and "input"'
+                    },
+                )
+        self.assertEqual(
+            self.assert_status(400, "/hostai/infer", {"model": "llama3", "input": {"op": "info"}}),
+            {"error": "unknown model"},
+        )
+        self.assertEqual(
+            self.assert_status(400, "/hostai/infer", {"model": 1, "input": {"op": "info"}}),
+            {"error": '"model" must be a string'},
+        )
+
+    def test_implementation_and_output_failures_are_generic_500(self):
+        for path, body in [
+            ("/predict", {"op": "info"}),
+            ("/hostai/infer", {"model": "pebby:latest", "input": {"op": "info"}}),
+        ]:
+            for options in (
+                {"side_effect": RuntimeError("private implementation detail")},
+                {"return_value": {}},
+                {"return_value": {"bad": float("nan")}},
+                {"return_value": {"action": 9}},
+            ):
+                with self.subTest(path=path, options=options):
+                    with patch.object(self.engine, "dispatch", **options):
+                        self.assertEqual(
+                            self.assert_status(500, path, body), {"error": "inference failed"}
+                        )
+            with patch.object(self.engine, "dispatch", return_value={"padding": "x" * MAX_BODY}):
+                self.assertEqual(
+                    self.assert_status(500, path, body),
+                    {"error": "provider output exceeds 262144 bytes"},
+                )
+
+    def test_unsupported_methods_are_405(self):
+        for method, path in [
+            ("GET", "/hostai/infer"),
+            ("POST", "/hostai/manifest"),
+            ("POST", "/ui/index.html"),
+            ("PUT", "/predict"),
+            ("DELETE", "/hostai/infer"),
+            ("PATCH", "/health"),
+            ("OPTIONS", "/predict"),
+            ("HEAD", "/hostai/manifest"),
+        ]:
+            request = Request(self.origin + path, method=method)
+            with self.subTest(method=method, path=path), self.assertRaises(HTTPError) as error:
+                urlopen(request, timeout=10)
+            self.assertEqual(error.exception.code, 405)
+            self.assertEqual(error.exception.headers.get_content_type(), "application/json")
+            if method != "HEAD":
+                self.assertEqual(json.load(error.exception), {"error": "method not allowed"})
+            error.exception.close()
+
+    def test_query_strings_are_rejected(self):
+        for path in ("/hostai/manifest?x=1", "/ui/index.html?x=1"):
+            with self.subTest(path=path), self.assertRaises(HTTPError) as error:
+                self.get(path)
+            self.assertEqual(error.exception.code, 404)
+            self.assertEqual(
+                json.load(error.exception),
+                {"error": "query strings and fragments are not supported"},
+            )
+
+    def test_startup_rejects_ui_without_bridge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ui_dir = Path(directory)
+            (ui_dir / "index.html").write_text("<!doctype html><title>No bridge</title>")
+            with self.assertRaisesRegex(ContractError, "must load the HostAI bridge"):
+                make_server(self.engine, 0, ui_dir)
 
     def test_rejects_chunked_bodies_with_400(self):
-        request = Request(self.origin + "/predict", json.dumps({"op": "info"}).encode(),
-                          {"Content-Type": "application/json", "Transfer-Encoding": "chunked"})
+        request = Request(
+            self.origin + "/predict",
+            json.dumps({"op": "info"}).encode(),
+            {"Content-Type": "application/json", "Transfer-Encoding": "chunked"},
+        )
         with self.assertRaises(HTTPError) as error:
             urlopen(request, timeout=10)
         self.assertEqual(error.exception.code, 400)
-        self.assertEqual(json.load(error.exception),
-                         {"error": "Use Content-Length, not Transfer-Encoding."})
+        self.assertEqual(
+            json.load(error.exception), {"error": "Transfer-Encoding is not supported"}
+        )
 
     def test_action_history_cap_is_enforced_over_http(self):
         # The last accepted history and the first rejected one, both against a
         # real socket, so the cap is proved where it actually protects the CPU.
         level = {"shipped": 0}
-        accepted = self.post("/predict", {"op": "play", "level": level,
-                                          "actions": [1, 2] * (MAX_ACTIONS // 2)})
+        accepted = self.post(
+            "/predict", {"op": "play", "level": level, "actions": [1, 2] * (MAX_ACTIONS // 2)}
+        )
         self.assertEqual(accepted["status"]["state"], "GAME_OVER")
-        error = self.assert_status(400, "/predict", {"op": "play", "level": level,
-                                                    "actions": [1] * (MAX_ACTIONS + 1)})
-        self.assertEqual(error["error"], f"actions must hold at most {MAX_ACTIONS} ids.")
+        error = self.assert_status(
+            400, "/predict", {"op": "play", "level": level, "actions": [1] * (MAX_ACTIONS + 1)}
+        )
+        self.assertTrue(error["error"].startswith("input does not conform to the input schema:"))
 
     def test_agent_without_a_checkpoint_is_an_answer_not_a_500(self):
-        for path, body in [("/predict", {"op": "agent", "level": {"shipped": 0}, "actions": []}),
-                           ("/hostai/infer", {"model": "pebby:latest",
-                                              "input": {"op": "agent", "level": {"shipped": 0}}})]:
+        for path, body in [
+            ("/predict", {"op": "agent", "level": {"shipped": 0}, "actions": []}),
+            (
+                "/hostai/infer",
+                {"model": "pebby:latest", "input": {"op": "agent", "level": {"shipped": 0}}},
+            ),
+        ]:
             with self.subTest(path=path):
                 result = self.post(path, body)
                 self.assertFalse(result["loaded"])
                 self.assertIsNone(result["action"])
                 self.assertIsNone(result["probabilities"])
-                self.assertTrue(result["reason"].startswith("No agent checkpoint at "),
-                                result["reason"])
+                self.assertTrue(
+                    result["reason"].startswith("No agent checkpoint at "), result["reason"]
+                )
 
     def test_rejects_wrong_content_type_with_415(self):
-        for content_type in ("text/plain", "application/x-ndjson", "application/octet-stream",
-                             "application/json-patch+json"):
+        for content_type in (
+            "text/plain",
+            "application/x-ndjson",
+            "application/octet-stream",
+            "application/json-patch+json",
+        ):
             with self.subTest(content_type=content_type):
                 error = self.assert_status(415, "/predict", {"op": "info"}, content_type)
-                self.assertEqual(error["error"], "Content-Type must be application/json.")
+                self.assertEqual(error["error"], "expected application/json")
 
-    def test_rejects_empty_and_oversize_bodies_with_413(self):
+    def test_rejects_empty_and_oversize_bodies(self):
         oversize = {"op": "play", "level": {"shipped": 0}, "padding": "x" * MAX_BODY}
         self.assertGreater(len(json.dumps(oversize)), MAX_BODY)
-        for name, body in {"empty": b"", "oversize": oversize}.items():
-            with self.subTest(body=name):
-                error = self.assert_status(413, "/predict", body)
-                self.assertEqual(error["error"], "Body must contain 1 to 262144 bytes.")
+        for path in ("/predict", "/hostai/infer"):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self.assert_status(400, path, b""), {"error": "request body is not valid JSON"}
+                )
+                self.assertEqual(
+                    self.assert_status(413, path, oversize),
+                    {"error": "request body exceeds 262144 bytes"},
+                )
+                # Exactly MAX_BODY bytes passes framing and reaches validation.
+                body = b"{}" + b" " * (MAX_BODY - 2)
+                self.assert_status(400, path, body)
 
     def test_rejects_unknown_endpoints_with_404(self):
         for path in ("/", "/infer", "/api/chat", "/predict/", "/hostai/infer/x", "/PREDICT"):
             with self.subTest(post=path):
-                self.assertEqual(self.assert_status(404, path, {"op": "info"}),
-                                 {"error": "Unknown endpoint."})
-        for path in ("/", "/predict", "/health/", "/hostai", "/hostai/manifest?x=1", "/unknown"):
+                self.assertEqual(
+                    self.assert_status(404, path, {"op": "info"}), {"error": "no such route"}
+                )
+        for path in ("/", "/predict", "/health/", "/hostai", "/unknown"):
             with self.subTest(get=path), self.assertRaises(HTTPError) as error:
                 self.get(path)
             self.assertEqual(error.exception.code, 404)
-            self.assertEqual(json.load(error.exception), {"error": "Unknown endpoint."})
+            self.assertEqual(json.load(error.exception), {"error": "no such route"})
 
     def test_static_ui_is_served_verbatim(self):
         expectations = {
@@ -231,8 +385,12 @@ class ServeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ui_dir = Path(directory) / "ui"
             ui_dir.mkdir()
-            (ui_dir / "index.html").write_text("<!doctype html><title>t</title>")
-            (ui_dir / "notes.txt").write_text("not served")
+            (ui_dir / "index.html").write_text(
+                '<!doctype html><script src="hostai-bridge.js"></script>'
+            )
+            (ui_dir / "notes.bin").write_bytes(b"not served")
+            with (ui_dir / "large.json").open("wb") as asset:
+                asset.truncate(MAX_ASSET_BYTES + 1)
             (Path(directory) / "secret.json").write_text("{}")
             (ui_dir / "escape.json").symlink_to(Path(directory) / "secret.json")
             (ui_dir / ".hidden.json").write_text("{}")
@@ -243,14 +401,27 @@ class ServeTests(unittest.TestCase):
             try:
                 with urlopen(origin + "/ui/index.html", timeout=10) as response:
                     self.assertEqual(response.status, 200)
-                for path in ["/ui/../secret.json", "/ui/sub/../../secret.json", "/ui/%2e%2e/secret.json",
-                             "/ui/escape.json", "/ui/.hidden.json", "/ui/notes.txt", "/ui/",
-                             "/ui", "/ui//index.html", "/ui/missing.html", "/ui/index.html/",
-                             "/hostai/manifest/../../secret.json", "/unknown"]:
+                for path in [
+                    "/ui/../secret.json",
+                    "/ui/sub/../../secret.json",
+                    "/ui/%2e%2e/secret.json",
+                    "/ui/escape.json",
+                    "/ui/.hidden.json",
+                    "/ui/notes.bin",
+                    "/ui/large.json",
+                    "/ui/",
+                    "/ui",
+                    "/ui//index.html",
+                    "/ui/missing.html",
+                    "/ui/index.html/",
+                    "/hostai/manifest/../../secret.json",
+                    "/unknown",
+                ]:
                     with self.subTest(path=path), self.assertRaises(HTTPError) as error:
                         urlopen(origin + path, timeout=10)
                     self.assertEqual(error.exception.code, 404)
-                    self.assertEqual(json.load(error.exception), {"error": "Unknown endpoint."})
+                    message = "no such asset" if path.startswith("/ui/") else "no such route"
+                    self.assertEqual(json.load(error.exception), {"error": message})
             finally:
                 server.shutdown()
                 server.server_close()

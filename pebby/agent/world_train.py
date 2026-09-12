@@ -76,6 +76,8 @@ root process launches GPU training; this file never picks CUDA unless asked
 (``--device auto`` reports what it chose).
 """
 
+from ..ls20.provenance import generated_context, difficulty_provenance
+
 import argparse
 import copy
 from datetime import datetime, timezone
@@ -90,6 +92,7 @@ import torch
 
 from .world_model import (ACTION_COUNT, DEFAULT_WEIGHTS, FRAME_SIZE, OPTIONAL_ARRAYS, REQUIRED_ARRAYS, WorldModelConfig, WorldPolicy, initialize_from_checkpoint, initialize_glyph_encoder, load_world_checkpoint, optimal_bits, parameter_groups, save_world_checkpoint)
 from .world_training_objectives import world_losses
+from .world_runtime import configure_execution
 from .glyph_model import load_glyph_checkpoint
 from .curriculum_sampling import CurriculumSampler, DEFAULT_START, DEFAULT_END
 
@@ -108,13 +111,13 @@ def load_dataset(path, history=None, cache_dir=None):
         source = np.load(path, allow_pickle=False)
     else:
         from .world_cache import cached_arrays
-        source = cached_arrays(path, cache_dir, (*REQUIRED_ARRAYS, *OPTIONAL_ARRAYS, 'meta'))
+        source = cached_arrays(path, cache_dir, (*REQUIRED_ARRAYS, *OPTIONAL_ARRAYS, 'context_index', 'meta'))
     with source as archive:
         missing = [name for name in REQUIRED_ARRAYS if name not in archive.files]
         if missing:
             raise ValueError(f"{path} lacks required arrays: {missing}")
         data = {name: archive[name] for name in REQUIRED_ARRAYS}
-        for name in OPTIONAL_ARRAYS:
+        for name in (*OPTIONAL_ARRAYS, "context_index"):
             data[name] = archive[name] if name in archive.files else None
         data["meta"] = {}
         if "meta" in archive.files:
@@ -135,6 +138,8 @@ def load_dataset(path, history=None, cache_dir=None):
                 "next_frames": (count, ACTION_COUNT, FRAME_SIZE, FRAME_SIZE),
                 "terminal": (count, ACTION_COUNT), "won": (count, ACTION_COUNT),
                 "optimal": (count,), "distances": (count, ACTION_COUNT), "seeds": (count,)}
+    if data.get("context_index") is not None:
+        expected["context_index"] = (count,)
     if data["player_cell"] is not None:
         expected["player_cell"] = (count, 2)
     if data["next_optimal"] is not None:
@@ -242,10 +247,13 @@ def require_verified_data(data):
     levels = {int(level["seed"]): level for level in meta.get("levels", [])}
     for seed in np.unique(data["seeds"]):
         proof = levels.get(int(seed), {})
-        if not proof.get("context_engine_verified") or proof.get("search_truncated", False):
+        if proof.get("context_engine_verified") is not True or proof.get("search_truncated") is not False:
             raise ValueError(f"seed {seed} lacks an untruncated contextual engine win proof")
-        if proof.get("context_index") != int(seed) % 7:
+        if proof.get("context_index") != generated_context(proof):
             raise ValueError(f"seed {seed} was verified in a different game context")
+        if data.get("context_index") is not None and np.any(
+                np.asarray(data["context_index"])[data["seeds"] == seed] != generated_context(proof)):
+            raise ValueError(f"seed {seed} row context_index differs from its verified game context")
 
 
 def require_winning_coverage(data, split="data"):
@@ -291,6 +299,16 @@ def training_objective_source():
     return {"module": world_losses.__module__, "path": str(path), "sha256": file_digest(path)}
 
 
+def initial_state_sha256(model):
+    """Fingerprint the actual initialization, including deterministic buffers."""
+    digest = hashlib.sha256()
+    for name, value in model.state_dict().items():
+        digest.update(name.encode())
+        digest.update(str((tuple(value.shape), value.dtype)).encode())
+        digest.update(value.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
 def glyph_source_record(path, checkpoint, validation_seeds):
     """Provenance of a pretrained glyph encoder; refuses one trained on validation levels."""
     overlap = sorted(set(checkpoint["train_seeds"]) & set(validation_seeds))
@@ -311,7 +329,7 @@ def curriculum_metadata(curriculum):
         return None
     return {"start": [float(value) for value in curriculum.ratios(0.).tolist()],
             "end": [float(value) for value in curriculum.ratios(1.).tolist()],
-            "unit": "distinct_level"}
+            "unit": "distinct_level", "difficulty_version": curriculum.difficulty_version}
 
 
 def as_tensors(data):
@@ -418,6 +436,36 @@ def curriculum_batches(tensors, sampler, batch_size, generator, steps, start_ste
                 yield mixed_batch(tensors, on_policy_tensors, index)
 
 
+def _metric_packet(record, diagnostic_weights, batch, successor_enabled, norm=None):
+    """One tensor-scalar readback; Python constants never move to the device.
+
+    Deduplicate tensor objects (not values), retaining references until readback.
+    FP64 packing preserves source floating values and physical-batch counts.
+    CPU literals stay unchanged and are reconstructed after the transfer.
+    """
+    size = len(batch["frames"])
+    valid = (batch["next_optimal"] != 0).sum() if successor_enabled else 0
+    tensors, tensor_ids = [], {}
+
+    def describe(value):
+        if not isinstance(value, torch.Tensor):
+            return (False, value)
+        key = id(value)
+        if key not in tensor_ids:
+            tensor_ids[key] = len(tensors)
+            tensors.append(value)
+        return (True, tensor_ids[key])
+
+    descriptors = [describe(valid), describe((norm > 1.) if norm is not None else 0)]
+    for name, value in record.items():
+        count = valid if name in ("successor_policy", "successor_policy_set_accuracy") else size
+        descriptors.extend((describe(value), describe(diagnostic_weights.get(name, count))))
+    values = (torch.stack([value.detach().to(torch.float64).reshape(()) for value in tensors])
+              .cpu().tolist()) if tensors else []
+    packet = [values[value] if is_tensor else value for is_tensor, value in descriptors]
+    return int(packet[0]), int(packet[1]), list(zip(packet[2::2], packet[3::2]))
+
+
 def run_epoch(model, tensors, device, weights, batch_size, optimizer=None, scheduler=None,
               generator=None, loops=None, precision="float32", drop_last=False,
               curriculum=None, steps_per_epoch=None, start_step=0, total_steps=None,
@@ -433,7 +481,7 @@ def run_epoch(model, tensors, device, weights, batch_size, optimizer=None, sched
     # Deterministic SIGReg directions for validation so the number is repeatable.
     eval_generator = None if training else torch.Generator(device=device.type).manual_seed(0)
     stream = batches(tensors, batch_size, generator if training else None, drop_last=drop_last)
-    difficulty_counts = {stage: 0 for stage in range(1, 6)}
+    difficulty_counts = {stage: 0 for stage in (curriculum.difficulties if curriculum else range(1, 6))}
     if curriculum is not None:
         if not training:
             raise ValueError("curriculum sampling is only for training")
@@ -446,32 +494,34 @@ def run_epoch(model, tensors, device, weights, batch_size, optimizer=None, sched
             for stage, count in curriculum.last_difficulty_counts.items():
                 difficulty_counts[stage] += count
         batch = {name: value.to(device, non_blocking=True) for name, value in batch.items()}
+        norm = None
+        if training:
+            optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(training), torch.autocast(
                 device_type=device.type, dtype=torch.bfloat16, enabled=precision == "bf16"):
             out = world_losses(model, batch, weights, loops=loops, sigreg_generator=eval_generator)
         if training:
-            optimizer.zero_grad(set_to_none=True)
             out["total"].backward()
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1., error_if_nonfinite=True)
-            clipped += int(norm > 1.)
             steps += 1
             optimizer.step()
             if scheduler is not None:
                 scheduler.step()
         size = len(batch["frames"])
         record = {"total": out["total"], **out["losses"], **out["diagnostics"]}
-        valid_count = (int((batch["next_optimal"] != 0).sum())
-                       if "successor_policy" in out["losses"] else 0)
+        valid_count, clip_count, metric_values = _metric_packet(
+            record, out.get('diagnostic_weights', {}), batch,
+            "successor_policy" in out["losses"], norm)
         successor_valid += valid_count
-        for name, value in record.items():
-            count = valid_count if name in ("successor_policy", "successor_policy_set_accuracy") else size
-            count = int(out.get('diagnostic_weights', {}).get(name, count))
+        clipped += clip_count
+        for name, (value, count) in zip(record, metric_values):
+            count = int(count)
             if name in ('rollout_rows', 'counterfactual_rows'):
                 # These diagnostics are counts, not per-row means.
-                sums[name] = sums.get(name, 0.) + float(value.detach())
+                sums[name] = sums.get(name, 0.) + value
                 denominators[name] = 1
                 continue
-            sums[name] = sums.get(name, 0.) + count * float(value.detach())
+            sums[name] = sums.get(name, 0.) + count * value
             denominators[name] = denominators.get(name, 0) + count
         samples += size
     stats = {name: value / max(1, denominators[name]) for name, value in sums.items()}
@@ -569,13 +619,17 @@ def build_parser():
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--curriculum", action="store_true",
                         help="Sample distinct levels, shifting from easy-heavy to hard-heavy")
-    parser.add_argument("--curriculum-start", type=float, nargs=5, default=DEFAULT_START,
-                        metavar=("D1", "D2", "D3", "D4", "D5"),
-                        help="Normalized curriculum difficulty weights at epoch start")
-    parser.add_argument("--curriculum-end", type=float, nargs=5, default=DEFAULT_END,
-                        metavar=("D1", "D2", "D3", "D4", "D5"),
-                        help="Normalized curriculum difficulty weights at epoch end")
+    parser.add_argument("--curriculum-start", type=float, nargs="+", default=None,
+                        metavar="WEIGHT",
+                        help="Curriculum start weights; default follows dataset difficulty_version")
+    parser.add_argument("--curriculum-end", type=float, nargs="+", default=None,
+                        metavar="WEIGHT",
+                        help="Curriculum end weights; default follows dataset difficulty_version")
     parser.add_argument("--min-train-levels", type=int, default=1)
+    parser.add_argument('--require-fresh-initialization', action='store_true',
+                        help='Refuse all external model/glyph/cell initialization weights')
+    parser.add_argument('--expected-initial-state-sha256',
+                        help='Require the independently measured random initialization fingerprint')
     parser.add_argument("--require-verified-data", action="store_true",
                         help="Require per-level contextual engine replay proofs in both splits")
     parser.add_argument("--require-winning-coverage", action="store_true",
@@ -583,6 +637,8 @@ def build_parser():
     parser.add_argument("--drop-last", action="store_true", help="Use full training batches only; reshuffle each epoch")
     parser.add_argument("--device", choices=("cuda", "cpu", "auto"), default="auto")
     parser.add_argument("--precision", choices=("float32", "bf16"), default="float32")
+    parser.add_argument('--compile-core', action='store_true', help='Compile the repeated core during gradient-enabled training')
+    parser.add_argument('--temporal-backend', choices=('auto', 'math', 'cudnn', 'flash'), default='auto')
     parser.add_argument("--checkpoint-out", type=Path, default=Path("checkpoints/ls20-world.pt"))
     parser.add_argument("--report-out", type=Path)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -614,6 +670,8 @@ def build_parser():
                              "(pebby.agent.glyph_train) into glyph_encoder after the world initialization")
     parser.add_argument("--max-states", type=int, help="Random subset of training states (first screen)")
     parser.add_argument("--max-validation-states", type=int)
+    parser.add_argument('--require-exact-distances', action='store_true',
+                        help='Reject finite distance labels outside the configured value head instead of clipping')
     parser.add_argument("--checkpoint-loops", action="store_true",
                         help="Recompute each loop during backward (same gradients, less memory)")
     parser.add_argument("--checkpoint-encoder", action="store_true",
@@ -634,6 +692,11 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.require_fresh_initialization and any((args.initialize_checkpoint,
+            args.initialize_glyph_checkpoint,args.initialize_cell_checkpoint,args.cell_recall)):
+        parser.error('--require-fresh-initialization forbids pretrained model, glyph, or cell weights')
+    if args.expected_initial_state_sha256 and not args.require_fresh_initialization:
+        parser.error('--expected-initial-state-sha256 requires --require-fresh-initialization')
     objective_source = training_objective_source()
     if args.validation_successor_labels and args.validation is None:
         parser.error("--validation-successor-labels requires --validation")
@@ -697,6 +760,10 @@ def main(argv=None):
             disjoint_seeds(train_data, validation_data)
         if len(np.unique(train_data["seeds"])) < args.min_train_levels:
             raise ValueError("training data has fewer distinct levels than --min-train-levels")
+        if args.require_exact_distances:
+            for split, data in (("training", train_data), ("validation", validation_data)):
+                if data is not None and np.any(np.asarray(data['distances']) >= config.max_distance):
+                    raise ValueError(f'{split} finite distance exceeds --max-distance; enlarge the fresh value head')
         if weights["successor_policy"] > 0:
             for split, data in (("training", train_data), ("validation", validation_data)):
                 if data is not None and data.get("next_optimal") is None:
@@ -718,6 +785,8 @@ def main(argv=None):
             from .on_policy_sampling import OnPolicySampler
             from .on_policy_provenance import validate_on_policy_provenance
             on_policy_data = load_dataset(args.on_policy_data, config.history, args.data_cache_dir)
+            if args.require_exact_distances and np.any(np.asarray(on_policy_data['distances']) >= config.max_distance):
+                raise ValueError('on-policy finite distance exceeds --max-distance; enlarge the fresh value head')
             require_verified_data(on_policy_data)
             require_winning_coverage(on_policy_data, 'on-policy data')
             if validation_data is not None:
@@ -771,6 +840,11 @@ def main(argv=None):
               f"{args.batch_size} per slot; the Gaussian match is noisy below ~32.", flush=True)
 
     model = WorldPolicy(config).to(device)
+    initialization = (dict(kind='random',seed=args.seed,
+                           weights_sha256=initial_state_sha256(model),optimizer_state='new')
+                      if args.require_fresh_initialization else None)
+    if args.expected_initial_state_sha256 and initialization['weights_sha256']!=args.expected_initial_state_sha256:
+        parser.error('random initial weights differ from the independent preflight fingerprint')
     cell_source = None
     validation_seed_list = np.unique(validation_data['seeds']).tolist() if validation_data is not None else []
     if args.initialize_checkpoint:
@@ -820,6 +894,8 @@ def main(argv=None):
     model.checkpoint_loops = args.checkpoint_loops
     model.checkpoint_encoder = args.checkpoint_encoder
     model.encoder_chunk_size = args.encoder_chunk_size
+    execution = configure_execution(model, compile_core=args.compile_core,
+                                    temporal_backend=args.temporal_backend)
     train_tensors = as_tensors(train_data)
     on_policy_tensors = as_tensors(on_policy_data) if on_policy_data is not None else None
     if on_policy_tensors is not None:
@@ -844,7 +920,7 @@ def main(argv=None):
     generator = torch.Generator().manual_seed(args.seed)
 
     name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
-    print(f"{device} ({name}) | {args.precision}, TF32 off, eager | {model.parameter_count():,} parameters | "
+    print(f"{device} ({name}) | {args.precision}, TF32 off | execution {execution} | {model.parameter_count():,} parameters | "
           f"estimated activations {model.activation_estimate_gib(args.batch_size):.2f} GiB at batch "
           f"{args.batch_size}{' with loop checkpointing' if args.checkpoint_loops else ''}", flush=True)
     train_seeds = sorted(int(s) for s in np.unique(train_data["seeds"]))
@@ -911,6 +987,8 @@ def main(argv=None):
                               on_policy_source=on_policy_source,
                               cell_source=cell_source,
                               training_objective_source=objective_source,
+                              execution=execution,
+                              initialization=initialization,
                               curriculum=curriculum_metadata(curriculum))
         if device.type == "cuda" and epoch == 1:
             print(f"Peak GPU memory {torch.cuda.max_memory_allocated() / 2 ** 30:.2f} GiB", flush=True)
@@ -933,6 +1011,8 @@ def main(argv=None):
         training_objective_source=objective_source,
         on_policy_source=on_policy_source,
         checkpoint_loops=args.checkpoint_loops,
+        execution=execution,
+        initialization=initialization,
         initialize_checkpoint=str(args.initialize_checkpoint) if args.initialize_checkpoint else None,
         initialize_glyph_checkpoint=(str(args.initialize_glyph_checkpoint)
                                      if args.initialize_glyph_checkpoint else None),
@@ -961,7 +1041,8 @@ def main(argv=None):
               "loss_weights": weights, "history": history, "baseline": baseline, "verdict": decision,
               "best": best, "train_seeds": train_seeds, "validation_seeds": validation_seeds,
               "checkpoint": str(args.checkpoint_out), "last_checkpoint": str(last_path), "device": str(device),
-              "peak_gpu_memory_gib": peak, "checkpoint_loops": args.checkpoint_loops}
+              "peak_gpu_memory_gib": peak, "checkpoint_loops": args.checkpoint_loops,
+              "execution": execution, "initialization": initialization}
     path = args.report_out or args.checkpoint_out.with_suffix(".training.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")

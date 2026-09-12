@@ -13,6 +13,8 @@ until a checkpoint that actually exists is about to be loaded: with no
 checkpoint on disk, the import never happens at all.
 """
 
+from pebby.ls20.provenance import difficulty_version, generated_context
+
 import json
 import threading
 from functools import lru_cache
@@ -70,23 +72,31 @@ PALETTE_NAMES = (
 # Keys a generated spec may carry, in the order they are echoed back. The
 # generator adds provenance fields the client returns untouched; anything else is
 # a client inventing structure, which is rejected rather than ignored.
-SPEC_FIELDS = ("format", "generator_version", "seed", "difficulty", "size",
+SPEC_FIELDS = ("format", "generator_version", "seed", "difficulty", "difficulty_version", "reference_profile", "size",
                "walls", "start", "start_triple", "goals", "cyclers", "launchers",
                "refills", "step_counter", "step_cost", "fog",
                "optimal_actions", "slack_moves", "solution", "reachable_states",
                "search_truncated", "search_limit", "context_index", "training_context_index",
                "verification_level_index", "verification_match_hint", "context_optimal_actions",
                "context_solution", "context_engine_verified", "engine_verified", "engine_win",
-               "levels_completed", "replay_lives")
+               "levels_completed", "replay_lives", "rails", "reference_level",
+               "reference_optimal_actions", "reference_calibration", "quality_version", "quality_profile",
+               "curriculum_version", "topology", "rail_mode", "free_cells", "corridor_fraction",
+               "bbox_width", "bbox_height", "changed_kinds", "generation_attempt", "split", "source",
+               "verification_lives", "oracle_backend", "proof", "minimum_slack_moves", "budget_floor",
+               "geometry_sha256", "geometry_d4_sha256", "geometry_split", "geometry_version",
+               "solution_mechanics", "patroller_count", "tick_period", "changing_attributes",
+               "distractor_count", "nonrequired_distractor_count", "non_required_distractor_count",
+               "gameplay_sha256", "generation_exclusions")
 SPEC_KEYS = frozenset(SPEC_FIELDS)
 # The subset that decides what the game does. Everything else is provenance, so
 # it is kept out of the oracle cache key and cannot be used to thrash the cache.
 GAMEPLAY_FIELDS = ("walls", "start", "start_triple", "goals", "cyclers", "launchers",
-                   "refills", "step_counter", "step_cost", "fog")
+                   "refills", "step_counter", "step_cost", "fog", "rails")
 # `launchers` arrived with generator version 2, so a version-1 spec that a client
 # still holds stays loadable; validation fills it in as empty.
 REQUIRED_SPEC_KEYS = frozenset(field for field in ("format",) + GAMEPLAY_FIELDS
-                               if field != "launchers")
+                               if field not in ("launchers", "rails"))
 TRIPLE_SIZES = (names.SHAPE_COUNT, names.COLOR_COUNT, names.ROTATION_COUNT)
 LAUNCHER_DELTAS = [list(delta) for delta in names.ACTION_DELTAS]
 
@@ -195,6 +205,16 @@ def validate_level(value):
         launchers.append({"cell": list(_cell(launcher["cell"], "Each launcher cell")),
                           "delta": list(delta)})
 
+    rails = []
+    for rail in _list(value.get("rails", []), "rails", 32):
+        _check(isinstance(rail, dict) and set(rail) == {"cells"},
+               'Each rail must be {"cells": [[column, row], ...]}.')
+        cells = sorted({_cell(cell, "Each rail cell")
+                        for cell in _list(rail["cells"], "rail cells", names.GRID_COLS * names.GRID_ROWS)})
+        _check(len(cells) >= 2, "A rail needs at least two distinct cells.")
+        rails.append({"cells": [list(cell) for cell in cells]})
+    rails.sort(key=lambda rail: rail["cells"])
+
     start = _cell(value["start"], "start")
     _check(_integer(value["step_counter"]) and 0 < value["step_counter"] <= 1000,
            "step_counter must be an integer between 1 and 1000.")
@@ -202,6 +222,12 @@ def validate_level(value):
            "step_cost must be an integer between 1 and 10.")
     _check(type(value["fog"]) is bool, "fog must be true or false.")
     context = value.get('training_context_index', 0)
+    try:
+        if difficulty_version(value):
+            _check(context == generated_context(value),
+                   'calibrated training_context_index must equal difficulty - 1.')
+    except ValueError as error:
+        _check(False, str(error))
     _check(_integer(context) and 0 <= context < SHIPPED_LEVELS,
            'training_context_index must be an integer between 0 and 6.')
     for field in ('context_index', 'verification_level_index'):
@@ -219,9 +245,19 @@ def validate_level(value):
     _check(not (set(specials) & wall_cells), "An interacting tile sits inside a wall.")
     _check(start not in wall_cells, "start sits inside a wall.")
 
+    walked = [tuple(cell) for rail in rails for cell in rail["cells"]]
+    _check(len(walked) == len(set(walked)), "Two rails share a cell.")
+    _check(not (set(walked) & wall_cells), "A rail sits inside a wall.")
+    fixed_specials = set(refills) | {tuple(g["cell"]) for g in goals} | {tuple(l["cell"]) for l in launchers}
+    _check(not (set(walked) & fixed_specials), "A rail overlaps a fixed interacting tile.")
+    for rail in rails:
+        cells = {tuple(cell) for cell in rail["cells"]}
+        _check(sum(tuple(cycler["cell"]) in cells for cycler in cyclers) == 1,
+               "Each rail needs exactly one cycler.")
+
     level = {key: value[key] for key in SPEC_FIELDS if key in value}
     level.update({"walls": [list(cell) for cell in walls], "refills": [list(cell) for cell in refills],
-                  "goals": goals, "cyclers": cyclers, "launchers": launchers, "start": list(start),
+                  "goals": goals, "cyclers": cyclers, "launchers": launchers, "rails": rails, "start": list(start),
                   "start_triple": _triple(value["start_triple"], "start_triple")})
     return level
 
@@ -236,7 +272,7 @@ def cache_key(level):
     """
     if "shipped" in level:
         return json.dumps(level, separators=(",", ":"))
-    gameplay = {key: level[key] for key in GAMEPLAY_FIELDS}
+    gameplay = {key: level.get(key, []) if key == "rails" else level[key] for key in GAMEPLAY_FIELDS}
     gameplay['training_context_index'] = level.get('training_context_index', 0)
     return json.dumps(gameplay,
                       sort_keys=True, separators=(",", ":"))
@@ -478,8 +514,10 @@ class AgentPolicy:
 class Engine:
     """Every operation the UI and the HostAI bridge can ask for."""
 
-    def __init__(self, checkpoint=None):
+    def __init__(self, checkpoint=None, *, banks=None):
+        from pebby.level_banks import LevelBanks
         self.agent = AgentPolicy(checkpoint)
+        self.banks = banks if banks is not None else LevelBanks()
 
     def info(self):
         # Attempt the load here rather than reporting "not loaded" for a
@@ -508,6 +546,27 @@ class Engine:
             "agent": self.agent.describe(),
         }
 
+    def boot(self, limit=50):
+        """Everything the viewer needs to paint its first screen, in one trip.
+
+        The viewer used to assemble this from four dependent requests — info,
+        then banks, then the first page of rows, then that row's level — each
+        waiting on the one before it. The work here is identical; only the
+        waiting goes away. Every part stays individually reachable, so nothing
+        below depends on a client having asked for the composite first.
+        """
+        catalogue = self.banks.catalogue()
+        result = {"info": self.info(), "banks": catalogue["banks"], "page": None, "level": None}
+        if not catalogue["banks"]:
+            return result
+        # The viewer opens on the first bank's training split, so that is what
+        # arrives prefetched; every other view is a normal bank_levels call.
+        page = self.banks.levels(catalogue["banks"][0]["id"], "train", None, 0, limit)
+        result["page"] = page
+        if page["levels"]:
+            result["level"] = self.bank_level(page["bank"], page["levels"][0]["id"])
+        return result
+
     def generate(self, seed, difficulty):
         _check(_integer(seed) and 0 <= seed <= MAX_SEED,
                f"seed must be an integer between 0 and {MAX_SEED}.")
@@ -520,6 +579,12 @@ class Engine:
         level = validate_level(level)
         env, _, frame = replay(level, [])
         return {"level": level, "frame": frame, "status": status_of(env)}
+
+    def bank_level(self, bank, row_id):
+        row, metadata = self.banks.level(bank, row_id)
+        level = validate_level(row)
+        env, _, frame = replay(level, [])
+        return {"level": level, "frame": frame, "status": status_of(env), **metadata}
 
     def shipped(self, index):
         level = validate_level({"shipped": index})
@@ -556,6 +621,16 @@ class Engine:
         op = request.get("op")
         _check(isinstance(op, str), 'Request must contain a string "op".')
         fields = set(request)
+        if op == "boot" and fields <= {"op", "limit"}:
+            return self.boot(request.get("limit", 50))
+        if op == "banks" and fields == {"op"}:
+            return self.banks.catalogue()
+        if op == "bank_levels" and fields <= {"op", "bank", "split", "difficulty", "offset", "limit"}:
+            _check("bank" in request, "bank is required.")
+            return self.banks.levels(request["bank"], request.get("split", "train"),
+                                    request.get("difficulty"), request.get("offset", 0), request.get("limit", 50))
+        if op == "bank_level" and fields == {"op", "bank", "id"}:
+            return self.bank_level(request["bank"], request["id"])
         if op == "info" and fields == {"op"}:
             return self.info()
         if op == "generate" and fields <= {"op", "seed", "difficulty"}:

@@ -30,3 +30,17 @@ cp dist/model_microscope-<new-version>-py3-none-any.whl ../Pebby/vendor/
 
 The lockfile verifies the wheel hash; do not replace an existing version's wheel in place.
 Always publish a newly versioned artifact.
+
+## HostAI provider SDK
+
+`hostai-0.1.0-py3-none-any.whl` is the active HostAI dependency, built from the
+HostAI repository's `python/` package. `pyproject.toml` selects this relative
+wheel path and `uv.lock` records its hash. `uv sync --locked` therefore works
+without another local checkout or a published PyPI package. No model weights
+are included.
+
+This is the initial, unpublished SDK build. For a subsequent release, bump its
+version, build a new wheel with `uv build --project python --wheel --no-sources`,
+add it here, update `vendor/.gitignore` to include that artifact, then update
+the dependency/source and run `uv lock`. Keep the SDK source repository as the
+source of truth; never patch files inside an installed wheel.

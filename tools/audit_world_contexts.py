@@ -1,5 +1,7 @@
 """Audit generated source banks using the collector's exact context verifier."""
 
+from pebby.ls20.provenance import generated_context, difficulty_provenance
+
 import argparse
 import collections
 from concurrent.futures import ProcessPoolExecutor
@@ -126,8 +128,8 @@ def main():
         source_hashes[source] = digest(content)
         for spec in (json.loads(line) for line in content.splitlines()):
             row = {"source": source, "split": "validation" if "validation" in source else "train",
-                   "seed": spec["seed"], "difficulty": spec["difficulty"],
-                   "context_index": spec["seed"] % 7, "gameplay_sha256": gameplay_hash(spec),
+                   "seed": spec["seed"], **difficulty_provenance(spec),
+                   "context_index": generated_context(spec), "gameplay_sha256": gameplay_hash(spec),
                    "status": "skipped_source" if spec.get("search_truncated") else "pending"}
             if row["status"] == "skipped_source":
                 row.update(reason="truncated source proof", optimal_actions=None,
@@ -139,7 +141,7 @@ def main():
     code_hashes = {source: digest(Path(source).read_bytes()) for source in CODE}
     run_id = digest(json.dumps(code_hashes, sort_keys=True).encode())[:16]
     manifest = {"format": "pebby.world-full-context-validity.v1", "source_hashes": source_hashes,
-                "code_hashes": code_hashes, "context_rule": "seed % 7", "search_limit": args.search_limit,
+                "code_hashes": code_hashes, "context_rule": "difficulty - 1 for ls20-reference-v1; seed % 7 for legacy", "search_limit": args.search_limit,
                 "verification": "world_data.verified_context: complete oracle, engine WIN, one level, lives=3",
                 "eligibility_exclusion": UNSUPPORTED,
                 "active_verification_run": run_id, "verification_runs": {run_id: code_hashes},

@@ -39,6 +39,8 @@ reproduces unmodified greedy argmax and every report records which rule produced
 its numbers; quote both.
 """
 
+from ..ls20.provenance import difficulty_version, generated_context
+
 import argparse
 import json
 from pathlib import Path
@@ -430,6 +432,9 @@ def bank_levels(path, limit=None):
 
     for index, spec in enumerate(specs):
         has_context = "training_context_index" in spec
+        if difficulty_version(spec) and (not has_context or
+                spec["training_context_index"] != generated_context(spec)):
+            raise ValueError(f"bank level {index} has a mismatched calibrated context")
         has_context_optimum = "context_optimal_actions" in spec
         if has_context and not has_context_optimum:
             raise ValueError(f"bank level {index} has training_context_index but no "
