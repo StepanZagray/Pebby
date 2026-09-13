@@ -351,6 +351,7 @@ def completion_rate(policy, levels=None, max_actions=200, device=None, oracles=N
             "runs": runs}
 
 
+@torch.inference_mode()
 def optimality_rate(specs, policy, max_actions=120, device=None, on_stall="next-best",
                     context_indices=None):
     """How often the policy's move is ONE OF the optimal moves, not the oracle's pick.

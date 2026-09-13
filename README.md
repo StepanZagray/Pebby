@@ -62,8 +62,11 @@ docs/                 durable project contracts and workflows
 
 ## Checks
 
+Pytest runs both the unittest classes and the plain pytest functions. The Python
+suite runs on CPU; some integration tests require local data or checkpoints.
+
 ```bash
-uv run python -m unittest discover -s tests
+CUDA_VISIBLE_DEVICES='' uv run --group dev python -m pytest tests -q
 PYTHONPATH=. uv run python tools/differential.py
 node --check ui/app.js ui/board.js
 ```
