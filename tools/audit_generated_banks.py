@@ -1,4 +1,4 @@
-"""Read-only integrity and coverage audit of regenerated v2 training banks.
+"""Read-only integrity and coverage audit of versioned generated banks.
 
 Structural checks inspect stored proofs. Optional bounded spotchecks repeat the
 generator's planner search and replay routes in the real engine. Planner agreement
@@ -12,12 +12,15 @@ import json
 import random
 from pathlib import Path
 import statistics
+from itertools import combinations
 
 from pebby.ls20 import names
 from pebby.ls20.extended_curriculum import gameplay_hash
 from pebby.ls20.generate import FORMAT, GENERATOR_VERSION, RESERVED
 from pebby.ls20.generation_quality import (budget_floor, geometry_partition, geometry_d4_hash,
                                          geometry_d4_partition, route_budget_slack)
+from pebby.ls20.reference_generator_v2 import (MECHANICS_VERSION, GEOMETRY_VERSION,
+                                              geometry_partition as geometry_v4_partition, seed_split)
 
 
 BOARD = {(x, y) for x in range(12) for y in range(12)}
@@ -95,6 +98,11 @@ def _distribution(values):
 def _version(row):
     # Training and pilot strings intentionally differ. Their quality and sprite
     # generator versions, rather than those labels, define compatibility.
+    if row.get('generator_version') == 4 and row.get('difficulty_version') == 'ls20-reference-v1':
+        if (type(row.get('quality_version')) is not int or type(row.get('mechanics_version')) is not str
+                or type(row.get('geometry_version')) is not str):
+            raise ValueError('v4 requires integer quality and string mechanics/geometry versions')
+        return ('reference', 4, row.get('quality_version'), row.get('mechanics_version'), row.get('geometry_version'))
     if 'extended_curriculum_version' in row:
         return ('extended', row['generator_version'], row['extended_curriculum_version'])
     if 'quality_version' in row:
@@ -206,14 +214,19 @@ def _summary(rows):
     return result
 
 
-def audit(trainrows, valrows, min_validation=500, *, coverage_policy='full'):
+def audit(trainrows, valrows, min_validation=500, *, coverage_policy='full', testrows=None, min_test=0):
     """Audit in-memory rows without mutating them or invoking a search."""
-    if min_validation < 0:
-        raise ValueError('min_validation must be nonnegative')
+    if min_validation < 0 or min_test < 0:
+        raise ValueError('minimum split counts must be nonnegative')
+    if testrows is None and min_test:
+        raise ValueError('min_test requires an explicit test bank')
     if coverage_policy not in ('full', 'sample'):
         raise ValueError('coverage_policy must be full or sample')
     errors, summaries, identities, versions = [], {}, {}, {}
-    for split, rows in (('train', trainrows), ('validation', valrows)):
+    split_rows = [('train', trainrows), ('validation', valrows)]
+    if testrows is not None:
+        split_rows.append(('test', testrows))
+    for split, rows in split_rows:
         identities[split] = {key: set() for key in ('seeds', 'gameplay', 'geometry', 'geometry_d4')}
         versions[split] = set()
         valid = []
@@ -224,7 +237,9 @@ def audit(trainrows, valrows, min_validation=500, *, coverage_policy='full'):
             label = f'{split} row {number} seed {row.get("seed", "missing")}'
             try:
                 reference = row.get('difficulty_version') == 'ls20-reference-v1'
-                geometry, partition = (geometry_d4_partition if reference else geometry_partition)(row)
+                v4 = reference and row.get('generator_version') == 4
+                partitioner = geometry_v4_partition if v4 else geometry_d4_partition if reference else geometry_partition
+                geometry, partition = partitioner(row)
                 fingerprint = gameplay_hash(row)
                 for key, value in (('seeds', row['seed']), ('gameplay', fingerprint),
                                    ('geometry', geometry), ('geometry_d4', _d4_hash(row))):
@@ -234,8 +249,24 @@ def audit(trainrows, valrows, min_validation=500, *, coverage_policy='full'):
                 version = _version(row)
                 versions[split].add(version)
                 expected_quality = 3 if reference else 2
-                if version[1:] != (GENERATOR_VERSION, expected_quality):
+                if v4:
+                    if (type(row['generator_version']) is not int
+                            or version != ('reference', 4, 3, MECHANICS_VERSION, GEOMETRY_VERSION)
+                            or 'extended_curriculum_version' in row):
+                        raise ValueError('requires exact v4 reference mechanics, quality and three-way geometry versions')
+                    if seed_split(row['seed']) != split or row.get('split') != split:
+                        raise ValueError('v4 seed range differs from declared bank split')
+                    required_proof = ('generator_version', 'mechanics_version', 'split', 'geometry_version', 'geometry_split')
+                    if not isinstance(row.get('proof'), dict) or any(key not in row['proof'] for key in required_proof):
+                        raise ValueError('missing nested v4 mechanics/split proof')
+                elif version[1:] != (GENERATOR_VERSION, expected_quality):
                     raise ValueError(f'requires sprite generator v{GENERATOR_VERSION} and curriculum quality v{expected_quality}')
+                elif 'mechanics_version' in row:
+                    raise ValueError('legacy rows cannot declare v4 mechanics')
+                for goal in row['goals']:
+                    flag = goal.get('vanishing_ring', False)
+                    if type(flag) is not bool or (flag and not v4):
+                        raise ValueError('vanishing ring requires a boolean flag on a v4 reference row')
                 if row.get('format') != FORMAT or row.get('size') != 64:
                     raise ValueError('unexpected level format/size')
                 if row.get('split', split) != split:
@@ -243,7 +274,7 @@ def audit(trainrows, valrows, min_validation=500, *, coverage_policy='full'):
                 if (partition != split or row.get('geometry_split') != partition
                         or row.get('geometry_sha256') != geometry):
                     raise ValueError('normalized geometry partition proof mismatch')
-                if reference and (row.get('geometry_version') != 'dihedral-v1'
+                if reference and (row.get('geometry_version') != (GEOMETRY_VERSION if v4 else 'dihedral-v1')
                                   or row.get('geometry_d4_sha256') != geometry):
                     raise ValueError('missing or inconsistent D4 geometry proof')
                 if 'gameplay_sha256' in row and row['gameplay_sha256'] != fingerprint:
@@ -321,27 +352,37 @@ def audit(trainrows, valrows, min_validation=500, *, coverage_policy='full'):
         summaries[split]['input_levels'] = len(rows)
         summaries[split]['rows_without_nested_proof'] = sum('proof' not in row for row in valid)
         summaries[split]['distinct'] = {key: len(values) for key, values in identities[split].items()}
-    overlap = {key: len(identities['train'][key] & identities['validation'][key]) for key in identities['train']}
-    for key, count in overlap.items():
-        if count:
-            errors.append(f'train/validation {key} overlap: {count}')
-    if versions['train'] != versions['validation']:
-        errors.append('train/validation generator quality versions do not match')
+    pairwise_overlap = {}
+    for left, right in combinations(identities, 2):
+        pair = f'{left}/{right}'
+        pairwise_overlap[pair] = {key: len(identities[left][key] & identities[right][key]) for key in identities[left]}
+        for key, count in pairwise_overlap[pair].items():
+            if count:
+                errors.append(f'{pair} {key} overlap: {count}')
+        if versions[left] != versions[right]:
+            errors.append(f'{pair} generator quality versions do not match')
+    overlap = pairwise_overlap['train/validation']
+    if any(any(version[0] == 'reference' for version in values) and len(values) != 1 for values in versions.values()):
+        errors.append('v4 reference banks cannot mix generation/mechanics families')
     if not trainrows:
         errors.append('training bank is empty')
     if len(valrows) < min_validation:
         errors.append(f'validation count {len(valrows)} below required {min_validation}')
+    if testrows is not None and len(testrows) < max(1, min_test):
+        errors.append(f'test count {len(testrows)} below required {max(1, min_test)}')
     return dict(format='pebby.generated-bank-audit.v1', status='complete' if not errors else 'failed_closed',
                 errors=errors, required_validation_levels=min_validation, overlap=overlap,
+                pairwise_overlap=pairwise_overlap, required_test_levels=max(1, min_test) if testrows is not None else None,
                 coverage_policy=coverage_policy,
                 versions={split: sorted(values) for split, values in versions.items()}, splits=summaries,
                 definitions={'corridor_fraction': 'Free cells with at most two cardinal free neighbors / all free cells.',
                              'rail_patterns': 'Joint rail cell sets translated by the playable geometry origin.',
-                             'version_matching': 'Family, generator_version and quality version; pilot/training label strings may differ.'},
+                             'version_matching': 'Family, generator_version and quality version; v4 also binds mechanics and geometry versions; legacy pilot/training labels may differ.'},
                 limitations=['Structural checks inspect stored proof metadata; only requested spotchecks repeat search and engine replay.',
                              'Coverage gates check bank diversity, not controller performance; action autocorrelation is descriptive.',
                              'Sample policy does not certify complete tier/mode/context coverage.',
                              'Geometry holdout includes translation, rotations and reflections, not whole topology families.',
+                             'Cross-version historical TRAIN exclusions require including those prior fingerprints in a separate provenance check.',
                              'Accepted coverage cannot reveal excluded candidate frequencies without generation reports.'])
 
 
@@ -451,8 +492,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--train', type=Path, nargs='+', required=True)
     parser.add_argument('--validation', type=Path, nargs='+', required=True)
+    parser.add_argument('--test', type=Path, nargs='+', help='Optional v4 third split; every pair gets all four duplicate checks.')
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--min-validation', type=int, default=500)
+    parser.add_argument('--min-test', type=int, default=0, help='Additional test count floor; an explicit test bank cannot be empty.')
     parser.add_argument('--coverage-policy', choices=('full', 'sample'), default='full',
                         help='Sample skips complete coverage quotas; use only for explicit small fixtures.')
     parser.add_argument('--generation-report', type=Path,
@@ -460,29 +503,35 @@ def main(argv=None):
     parser.add_argument('--spotcheck', type=int, default=7,
                         help='Levels per split, maximum20; stratified same-planner re-search and real-engine replay.')
     args = parser.parse_args(argv)
-    if args.min_validation < 0 or not 0 <= args.spotcheck <= 20:
-        parser.error('nonnegative minimum validation count and spotcheck0..20 required')
+    if args.min_validation < 0 or args.min_test < 0 or not 0 <= args.spotcheck <= 20:
+        parser.error('nonnegative minimum split counts and spotcheck0..20 required')
+    if args.min_test and not args.test:
+        parser.error('--min-test requires --test')
     if args.report.exists():
         raise FileExistsError('refusing to overwrite audit report')
-    bank_paths = [*args.train, *args.validation]
+    selected_splits = [('train', args.train), ('validation', args.validation)]
+    if args.test:
+        selected_splits.append(('test', args.test))
+    bank_paths = [path for _, selected in selected_splits for path in selected]
     paths = [*bank_paths, *([args.generation_report] if args.generation_report else [])]
     if args.report.resolve() in {path.resolve() for path in paths}:
         raise ValueError('report must not alias an input bank')
     contents = {str(path): path.read_bytes() for path in paths}
     inputs = {path: hashlib.sha256(data).hexdigest() for path, data in contents.items()}
     rows = {split: [json.loads(line) for path in selected for line in contents[str(path)].splitlines() if line.strip()]
-            for split, selected in (('train', args.train), ('validation', args.validation))}
-    result = audit(rows['train'], rows['validation'], args.min_validation, coverage_policy=args.coverage_policy)
+            for split, selected in selected_splits}
+    result = audit(rows['train'], rows['validation'], args.min_validation, coverage_policy=args.coverage_policy,
+                   testrows=rows.get('test'), min_test=args.min_test)
     result['input_sha256'] = inputs
     result['audit_code_sha256'] = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
-                                    for path in (Path(__file__).resolve(), REPO_ROOT/'pebby/ls20/generation_quality.py',
-                                                 REPO_ROOT/'pebby/ls20/reference_profiles.py')}
+                                    for path in (Path(__file__).resolve(), *sorted((REPO_ROOT/'pebby/ls20').glob('*.py')),
+                                                 REPO_ROOT/'third_party/ls20/ls20.py')}
     result['generation_evidence'] = None
     if args.generation_report:
         try:
             split_inputs = {split: [(inputs[str(path)], sum(bool(line.strip()) for line in contents[str(path)].splitlines()))
                                     for path in selected]
-                            for split, selected in (('train', args.train), ('validation', args.validation))}
+                            for split, selected in selected_splits}
             result['generation_evidence'] = _generation_evidence(
                 json.loads(contents[str(args.generation_report)]), split_inputs)
         except (ValueError, KeyError, TypeError) as error:

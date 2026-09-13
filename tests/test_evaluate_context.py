@@ -27,6 +27,36 @@ class ContextualBankTests(unittest.TestCase):
         self.assertEqual(levels, [spec])
         build.assert_called_once_with(spec)
 
+    def test_cli_default_caps_follow_the_selected_protocol(self):
+        from pebby.ls20 import shipped
+        self.assertEqual(evaluate.default_max_actions('generated'), 300)
+        self.assertEqual(evaluate.default_max_actions('shipped'),
+                         5 * sum(shipped.HUMAN_BASELINE))
+        self.assertEqual(evaluate.default_max_actions('shipped_level', 2),
+                         5 * shipped.HUMAN_BASELINE[1])
+        with self.assertRaises(ValueError):
+            evaluate.default_max_actions('shipped_level', 0)
+
+    def test_parameter_count_falls_back_to_loaded_model_when_metadata_is_absent(self):
+        self.assertEqual(evaluate.parameter_count(torch.nn.Linear(2, 3)), 9)
+
+    def test_cli_rejects_ignored_depth_override_on_spatial_wrapper(self):
+        from types import SimpleNamespace
+        policy = SimpleNamespace(config=lambda: {"architecture": "world", "loops": 6})
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "policy.pt"
+            checkpoint.touch()
+            with patch.object(evaluate, "load_checkpoint", return_value=(policy, {})), \
+                    patch.object(evaluate, "completion_rate") as play, \
+                    patch.object(sys, "argv", ["evaluate", "--checkpoint", str(checkpoint),
+                                               "--device", "cpu", "--loops", "2"]), \
+                    patch("sys.stderr"):
+                with self.assertRaises(SystemExit) as error:
+                    evaluate.main()
+        self.assertEqual(error.exception.code, 2)
+        play.assert_not_called()
+        self.assertFalse(hasattr(policy, "loops"))
+
     def test_ordinary_bank_keeps_context_zero_and_original_optimum(self):
         spec = self.spec()
         with patch("pebby.ls20.bank.load", return_value=[spec]), \
@@ -77,8 +107,10 @@ class ContextualBankTests(unittest.TestCase):
                     patch.object(evaluate, "completion_rate", return_value=strict) as strict_call, \
                     patch.object(evaluate, "budgeted_completion", return_value=budgeted) as budget_call, \
                     patch.object(sys, "argv", ["evaluate", "--checkpoint", str(checkpoint),
-                                                "--bank", str(bank), "--device", "cpu"]):
+                                                "--bank", str(bank), "--device", "cpu",
+                                                "--max-actions", "17"]):
                 evaluate.main()
+        self.assertEqual(strict_call.call_args.args[2], 17)
         self.assertEqual(strict_call.call_args.args[4], [23])
         self.assertEqual(strict_call.call_args.args[6], [5])
         self.assertEqual(budget_call.call_args.args[2], [23])

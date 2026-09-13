@@ -149,6 +149,23 @@ class InferenceTests(unittest.TestCase):
         self.assertFalse(self.dispatch({"op": "play", "level": reread,
                                         "actions": solution[:-1]})["status"]["won"])
 
+    def test_versioned_vanishing_goal_survives_public_validation(self):
+        from tests.test_reference_generation_v2 import small_spec
+        spec = {"format": inference.RULESET, "size": 64, **small_spec()}
+        spec["mechanics_version"] = "ls20-reference-relations-v2"
+        canonical = validate_level(spec)
+        self.assertIs(canonical["goals"][0]["vanishing_ring"], True)
+        self.assertEqual(validate_level(canonical), canonical)
+        self.assertEqual(canonical["mechanics_version"], spec["mechanics_version"])
+        result = self.dispatch({"op": "play", "level": canonical, "actions": [4]})
+        self.assertEqual(result["status"]["goals_solved"], [True, False])
+        for version, flag in ((3, True), (4, 1), (4, "yes")):
+            bad = copy.deepcopy(spec)
+            bad["generator_version"] = version
+            bad["goals"][0]["vanishing_ring"] = flag
+            with self.assertRaises(ValueError):
+                validate_level(bad)
+
     def test_hint_context_changes_the_oracle_cache_key(self):
         # Context-key regression uses an explicitly historical fixture; calibrated
         # levels separately enforce the tier's single permitted context.
@@ -297,9 +314,9 @@ class InferenceTests(unittest.TestCase):
              "refills must hold at most 16 entries."),
             ("no goals at all", self.spec_with(goals=[]), "A level needs at least one goal."),
             ("goal without a triple", self.spec_with(goals=[{"cell": goal["cell"]}]),
-             'Each goal must be {"cell": [c, r], "triple": [s, c, r]}.'),
+             'Each goal needs cell and triple, with an optional boolean vanishing_ring.'),
             ("goal with an extra key", self.spec_with(goals=[{**goal, "extra": 1}]),
-             'Each goal must be {"cell": [c, r], "triple": [s, c, r]}.'),
+             'Each goal needs cell and triple, with an optional boolean vanishing_ring.'),
             ("cycler without a kind", self.spec_with(cyclers=[{"cell": cycler["cell"]}]),
              'Each cycler must be {"cell": [c, r], "kind": "shape"|"color"|"rotation"}.'),
             ("cycler kind unknown", self.spec_with(cyclers=[{**cycler, "kind": "size"}]),

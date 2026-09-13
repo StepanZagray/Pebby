@@ -22,6 +22,7 @@ from .layout import extract
 from .plan import Oracle, advance as plan_advance
 
 GENERATOR_VERSION = 3  # context-specific complete proofs; bounded hard drafts
+SUPPORTED_GENERATOR_VERSIONS = (2, 3, 4)
 FORMAT = "pebby.ls20.level.v1"
 
 # Sprite prototypes, by the role each plays.
@@ -30,6 +31,7 @@ PLAYER = "sfqyzhzkij"
 GOAL_PAD = "rjlbuycveu"
 GOAL_ICON = "kvynsvxbpi"
 GOAL_RING = "vjotnebuqo"
+VANISHING_GOAL_RING = "njpewhmtfd"
 GOAL_HINT = "hoswmpiqkw"
 GOAL_PLATE = "nszegiawib"
 REFILL = "npxgalaybz"
@@ -260,8 +262,11 @@ def build_level(spec):
         place(LAUNCHER[delta], tuple(entry["cell"]), offset=(-delta[0], -delta[1]))
     for goal in spec["goals"]:
         cell = tuple(goal["cell"])
+        vanishing = goal.get("vanishing_ring", False)
+        if type(vanishing) is not bool or (vanishing and spec.get("generator_version") != 4):
+            raise ValueError('vanishing_ring must be boolean and requires generator_version=4')
         place(GOAL_PLATE, cell, offset=(-2, -2), rotation=180)
-        place(GOAL_RING, cell, offset=(-1, -1))
+        place(VANISHING_GOAL_RING if vanishing else GOAL_RING, cell, offset=(-1, -1))
         place(GOAL_HINT, cell, offset=(-1, -1))
         place(GOAL_PAD, cell)
         place(GOAL_ICON, cell, offset=(1, 1))
@@ -345,13 +350,22 @@ def generate_legacy_level(seed, difficulty=1, attempts=400, min_slack=8):
     raise RuntimeError(f"no completable level for seed={seed} difficulty={difficulty}")
 
 
-def generate_level(seed, difficulty=1, attempts=400, min_slack=None, search_limit=None, **kwargs):
+def generate_level(seed, difficulty=1, attempts=400, min_slack=None, search_limit=None,
+                   *, generator_version=GENERATOR_VERSION, **kwargs):
     """Generate a seven-tier reference-profile lesson with its actual tier context.
 
     Historical five-tier fixtures remain available through generate_legacy_level;
     their seed-context and difficulty semantics are deliberately unchanged.
+
+    Version 3 remains the default so historical seeds reconstruct identically.
+    Opt into version 4 for goal relations, vanishing rings and three-way holdout.
     """
-    from .reference_generator import generate_level as reference_level
+    if type(generator_version) is not int or generator_version not in (3, 4):
+        raise ValueError('generation requires generator_version=3 or 4')
+    if generator_version == 4:
+        from .reference_generator_v2 import generate_level as reference_level
+    else:
+        from .reference_generator import generate_level as reference_level
     return reference_level(seed, difficulty, attempts=attempts, min_slack=min_slack,
                            search_limit=search_limit, **kwargs)
 

@@ -87,7 +87,7 @@ SPEC_FIELDS = ("format", "generator_version", "seed", "difficulty", "difficulty_
                "geometry_sha256", "geometry_d4_sha256", "geometry_split", "geometry_version",
                "solution_mechanics", "patroller_count", "tick_period", "changing_attributes",
                "distractor_count", "nonrequired_distractor_count", "non_required_distractor_count",
-               "gameplay_sha256", "generation_exclusions")
+               "gameplay_sha256", "generation_exclusions", "mechanics_version")
 SPEC_KEYS = frozenset(SPEC_FIELDS)
 # The subset that decides what the game does. Everything else is provenance, so
 # it is kept out of the oracle cache key and cannot be used to thrash the cache.
@@ -176,10 +176,19 @@ def validate_level(value):
     refills = sorted({_cell(cell, "Each refill") for cell in _list(value["refills"], "refills", 16)})
     goals, cyclers = [], []
     for goal in _list(value["goals"], "goals", 8):
-        _check(isinstance(goal, dict) and set(goal) == {"cell", "triple"},
-               'Each goal must be {"cell": [c, r], "triple": [s, c, r]}.')
-        goals.append({"cell": list(_cell(goal["cell"], "Each goal cell")),
-                      "triple": _triple(goal["triple"], "Each goal triple")})
+        _check(isinstance(goal, dict) and {"cell", "triple"} <= set(goal)
+               and set(goal) <= {"cell", "triple", "vanishing_ring"},
+               'Each goal needs cell and triple, with an optional boolean vanishing_ring.')
+        canonical = {"cell": list(_cell(goal["cell"], "Each goal cell")),
+                     "triple": _triple(goal["triple"], "Each goal triple")}
+        if "vanishing_ring" in goal:
+            _check(type(goal["vanishing_ring"]) is bool, "vanishing_ring must be true or false.")
+            _check(not goal["vanishing_ring"] or value.get("generator_version") == 4,
+                   "Vanishing goal rings require generator_version 4.")
+            # Explicit false is equivalent to the legacy plain ring.
+            if goal["vanishing_ring"]:
+                canonical["vanishing_ring"] = True
+        goals.append(canonical)
     _check(goals, "A level needs at least one goal.")
     for cycler in _list(value["cyclers"], "cyclers", 32):
         _check(isinstance(cycler, dict) and set(cycler) == {"cell", "kind"},
@@ -483,10 +492,13 @@ class AgentPolicy:
         self._model = model
         self.loaded = True
         self.reason = None
-        self.metadata = {key: value for key, value in checkpoint.items() if key != "weights"}
+        self.metadata = {key: value for key, value in checkpoint.items()
+                         if key not in {"weights", "encoder_weights", "planner_weights", "perceptor_weights"}}
         self.parameters = self.metadata.get("parameters")
         if self.parameters is None and hasattr(model, "parameter_count"):
             self.parameters = model.parameter_count()
+        if self.parameters is None:
+            self.parameters = sum(parameter.numel() for parameter in model.parameters())
         return True
 
     def act(self, frame, history=None):

@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "changed_source_sha256": {
+    "pebby/ls20/generate.py": "9665da4e68f1ad162bb29eb52899d6819e3099d59aa83b37e5b5d9523e11c954",
+    "pebby/ls20/bank.py": "8970ad1dfc10e8176cf3b6ead5e401b2a3e284864130bf8dbc0e52e75383ec56",
+    "pebby/ls20/reference_generator_v2.py": "ea9bd3b2d5a571862bad6db4f5e1ff21d39335a99f13abb799409ab688d6a396",
+    "tests/test_reference_generation_v2.py": "3f43d232e0c961f8b6cfdf944953658e013e6345242aca4c6bf4766eca3fde40"
+  },
+  "unchanged_legacy_sources": {
+    "pebby/ls20/reference_generator.py": true,
+    "pebby/ls20/reference_profiles.py": true
+  },
+  "cpu_only": true,
+  "official_layouts_used": false,
+  "existing_banks_modified": false,
+  "engine_physics_modified": false,
+  "tests": [
+    {
+      "command": ".venv/bin/python -m unittest tests.test_reference_generation_v2 -v",
+      "passed": 8
+    },
+    {
+      "command": ".venv/bin/python -m unittest tests.test_reference_generation -v",
+      "passed": 10
+    },
+    {
+      "command": ".venv/bin/python -m unittest tests.test_public_generation -v",
+      "passed": 6
+    }
+  ]
+}
