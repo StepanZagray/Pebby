@@ -476,6 +476,43 @@ def generated_levels(count, difficulty, seed):
     return [build_level(spec) for spec in specs], [spec["optimal_actions"] for spec in specs]
 
 
+def default_max_actions(source, shipped_level=None):
+    """Return the CLI cap for a source when the user leaves it unspecified.
+
+    Function callers retain the historical ``max_actions=200`` defaults.  The
+    command-line evaluator uses caps that cover the protocol it selected: a
+    generated strict episode gets 300 actions, one isolated shipped level gets
+    five times its human baseline, and the sequential shipped run gets the sum
+    of those seven per-level caps.
+    """
+    from ..ls20 import shipped
+    if source == "generated":
+        return 300
+    if source.startswith("bank "):
+        return 300
+    if source == "shipped":
+        return sum(5 * baseline for baseline in shipped.HUMAN_BASELINE)
+    if source == "shipped_level":
+        if shipped_level not in range(1, shipped.LEVEL_COUNT + 1):
+            raise ValueError("shipped_level must be in 1..7")
+        return 5 * shipped.HUMAN_BASELINE[shipped_level - 1]
+    if source.startswith("shipped level "):
+        try:
+            level = int(source.rsplit(" ", 1)[1])
+        except ValueError as error:
+            raise ValueError(f"unknown evaluation source {source!r}") from error
+        return default_max_actions("shipped_level", level)
+    raise ValueError(f"unknown evaluation source {source!r}")
+
+
+def parameter_count(policy):
+    """Count loaded parameters when an older checkpoint omitted metadata."""
+    method = getattr(policy, "parameter_count", None)
+    if callable(method):
+        return int(method())
+    return sum(parameter.numel() for parameter in policy.parameters())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -503,7 +540,10 @@ def main():
                              "costs one planner build per level")
     parser.add_argument("--difficulty", type=int, default=2)
     parser.add_argument("--seed", type=int, default=1_000_000, help="First generated-level seed")
-    parser.add_argument("--max-actions", type=int, default=200)
+    parser.add_argument("--max-actions", type=int, default=None,
+                        help="Strict action cap. Defaults to 300 for generated levels, "
+                             "5x the selected human baseline for one shipped level, "
+                             "or 5x the sum of shipped human baselines for the sequential set.")
     parser.add_argument("--on-stall", choices=("next-best", "repeat"), default="next-best",
                         help="What to do when an action leaves the frame unchanged. 'repeat' is "
                              "unmodified greedy argmax, which measurably loops against walls")
@@ -521,7 +561,7 @@ def main():
         parser.error("--limit is positive and only applies to --bank")
     if args.bank is not None and not args.bank.exists():
         parser.error(f"bank not found: {args.bank}")
-    if args.max_actions < 1 or args.seed < 0:
+    if ((args.max_actions is not None and args.max_actions < 1) or args.seed < 0):
         parser.error("max-actions must be positive and seed must not be negative")
     if args.temperature < 0 or args.budget_multiplier <= 0:
         parser.error("temperature must not be negative and budget-multiplier must be positive")
@@ -537,8 +577,10 @@ def main():
         parser.error(f"{args.checkpoint} is not a usable LS20 policy checkpoint: {error}")
 
     if args.loops is not None:
-        if args.loops < 1 or policy.config().get("architecture") not in ("looped", "world"):
-            parser.error("--loops must be positive and requires a looped checkpoint")
+        if (args.loops < 1 or policy.config().get("architecture") not in ("looped", "world")
+                or not hasattr(policy, "loops")):
+            parser.error("--loops must be positive and requires a checkpoint with mutable inference loops; "
+                         "spatial policies keep their encoder depth fixed")
         policy.loops = args.loops
 
     levels, oracles, specs, source = None, None, None, "shipped"
@@ -566,6 +608,8 @@ def main():
         parser.error(f"could not load levels: {error}")
     if levels is not None and not levels:
         parser.error("no levels to evaluate")
+    if args.max_actions is None:
+        args.max_actions = default_max_actions(source, args.shipped_level)
 
     report = {"format": REPORT_FORMAT}
     if args.protocol in ("strict", "both"):
@@ -598,7 +642,9 @@ def main():
                                                context_indices[:args.optimality]
                                                if context_indices is not None else None)
     report.update({"checkpoint": str(args.checkpoint), "device": str(device),
-                   "parameters": checkpoint.get("parameters"),
+                   "parameters": (checkpoint.get("parameters")
+                                  if checkpoint.get("parameters") is not None
+                                  else parameter_count(policy)),
                    "architecture": policy.config().get("architecture", "cnn"),
                    "inference_loops": getattr(policy, "loops", policy.config().get("loops")),
                    "checkpoint_loops": checkpoint.get("config", {}).get("loops"),
