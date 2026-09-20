@@ -14,15 +14,17 @@ by level seed, which is the same idea done in-place.
 *Compare against the majority-action prior, every time.* An earlier ARC-AGI-3
 model on this machine watched its loss fall while its held-out cross-entropy
 (1.66739) stayed WORSE than the empirical prior of the training labels
-(1.65815): it had learned nothing, and the loss curve hid it
+(1.65815): it had failed that offline diagnostic, and the loss curve hid it
 (tofy-py ``docs/ACTION_RECALL_RESULTS.md``). So every run prints the constant
 predictor's cross-entropy next to the model's, and says plainly when the model
 fails to beat it.
 
-The kept checkpoint is the best validation cross-entropy, not the last epoch.
-Measured on this task: validation CE bottomed at epoch 3 and had roughly doubled
-by epoch 20 while training CE kept falling, so saving the final weights would
-have shipped a measurably worse policy than the run actually found.
+Each epoch plays one actual seven-level sequential game with native lives,
+strict neural argmax, and a fixed 300-action cap per level. The candidate with
+the most completed levels is retained; ties keep the earlier candidate. Offline
+cross-entropy and accuracy remain diagnostics and cannot select or promote a
+checkpoint. ``--select-on last`` explicitly retains the final unpromoted
+candidate, with its actual gameplay report still recorded.
 
 *The target is the optimal action SET, not one member of it.* Measured over 981
 on-path states: 70% have exactly one optimal action, but 22% have two, 6% three
@@ -33,8 +35,8 @@ is then exactly what loses under argmax. When a shard carries the optimal-set
 bitmask, the target puts equal mass on every optimal action instead. Two
 accuracies are reported: `accuracy` still matches the oracle's single pick, so
 it stays comparable with older runs and is capped near 83.6% for a perfect
-player, while `set_accuracy` asks the question that decides completion -- did
-the policy choose SOME optimal action.
+player, while `set_accuracy` asks whether the policy chose SOME optimal action on
+those labelled states. Neither offline accuracy establishes game completion.
 
 Loss is action cross-entropy and nothing else. The auxiliary
 actions-to-completion head was removed after measured failures of auxiliary
@@ -51,11 +53,14 @@ has equal-length routes, matching its exact action was never the objective.
 
 import argparse
 import copy
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 import math
+import os
 from pathlib import Path
 import sys
+import tempfile
+import uuid
 
 import numpy as np
 import torch
@@ -64,6 +69,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from ..ls20 import names
 from .model import build_policy, load_checkpoint, save_checkpoint
+from .gameplay_gate import evaluate_sequential, assess_gameplay
 
 ACTION_COUNT = len(names.ACTION_IDS)
 
@@ -96,8 +102,8 @@ def optimal_targets(masks):
 def prior_scores(prior, actions, masks=None):
     """What a constant predictor that ignores the frame would score.
 
-    This is the bar. A model whose cross-entropy sits above it has learned
-    nothing about the frame, however pretty its loss curve looks. Scored against
+    This is an offline diagnostic. A model whose cross-entropy sits above it
+    fails this diagnostic; gameplay must be measured separately. Scored against
     the same soft target the model sees, so the two stay comparable.
     """
     actions = np.asarray(actions, dtype=np.int64)
@@ -243,7 +249,31 @@ def training_sets(shard, held, args):
             train_seeds, validation_seeds)
 
 
+def selection_mode(value):
+    if value not in ('gameplay', 'last'):
+        raise argparse.ArgumentTypeError('offline checkpoint selection is disabled; use gameplay or explicit last (unpromoted candidate)')
+    return value
+
+
+def save_candidate(path, model, **metadata):
+    """Publish a reload-checked candidate without replacing any existing file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.candidate-', suffix='.pt', delete=False) as stream:
+            temporary = Path(stream.name)
+        checkpoint = save_checkpoint(temporary, model, **metadata)
+        load_checkpoint(temporary)
+        os.link(temporary, path)  # Atomic no-replace publication, including concurrent writers.
+        return checkpoint
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def train(shard, held, args, device):
+    selection_mode(args.select_on)
     train_set, validation_set, train_labels, validation_labels, train_seeds, validation_seeds = (
         training_sets(shard, held, args))
     # The prior comes from the TRAINING labels only: a baseline fitted to the
@@ -310,46 +340,56 @@ def train(shard, held, args, device):
                      f"(prior {baseline['validation']['cross_entropy']:.5f}) | "
                      f"val acc {entry['validation']['accuracy']:.4f} "
                      f"set {entry['validation']['set_accuracy']:.4f}")
-        # Keep the epoch that generalised, not the one that memorised hardest.
-        # Held on the CPU so the spare copy never competes for GPU memory.
-        # MEASURED CAVEAT: on this task the checkpoint with the best validation
-        # cross-entropy did NOT complete more levels than a later, overfitted one
-        # (9/100 vs 15/100 on 100 unseen levels -- a 1.3-sigma difference, i.e.
-        # indistinguishable at that sample size). Cross-entropy is a proxy and it
-        # is not the objective, so the criterion is a flag, not a law.
-        scored = entry.get("validation", entry["train"])
-        score = (-scored[args.select_on] if args.select_on in ("accuracy", "set_accuracy")
-                 else scored["cross_entropy"])
-        if args.select_on == "last":
-            score = -epoch
-        if best is None or score < best["score"]:
-            best = {"epoch": epoch, "score": score, "criterion": args.select_on,
-                    "cross_entropy": scored["cross_entropy"], "accuracy": scored["accuracy"],
-                    "selected_on": "validation" if "validation" in entry else "train",
-                    "weights": copy.deepcopy({k: v.detach().to("cpu") for k, v in model.state_dict().items()})}
-            line += " *"
+        # Actual sequential completion alone ranks candidates. Equal gameplay
+        # progress keeps the earlier weights regardless of offline diagnostics.
+        model.eval()
+        entry['gameplay'] = evaluate_sequential(model, device, per_level_cap=300)
+        assessment = assess_gameplay(entry['gameplay'], entry['gameplay'])
+        if assessment['status'] == 'no_evidence':
+            raise ValueError('checkpoint selection requires complete gameplay evidence: ' + assessment['reason'])
+        if best is not None:
+            comparison = assess_gameplay(best['gameplay'], entry['gameplay'])
+            if comparison['status'] == 'no_evidence':
+                raise ValueError('checkpoint gameplay protocols differ: ' + comparison['reason'])
+        completed = entry['gameplay']['levels_completed']
+        score = -completed if args.select_on == 'gameplay' else -epoch
+        scored = entry.get('validation', entry['train'])
+        line += f" | actual sequential gameplay {completed}/7"
+        if best is None or score < best['score']:
+            best = dict(epoch=epoch, score=score, criterion=args.select_on,
+                        cross_entropy=scored['cross_entropy'], accuracy=scored['accuracy'],
+                        diagnostic_split='validation' if 'validation' in entry else 'train',
+                        offline_diagnostics_only=True,
+                        selected_on='actual_sequential_gameplay' if args.select_on == 'gameplay' else 'last_epoch',
+                        gameplay=copy.deepcopy(entry['gameplay']),
+                        levels_completed=completed, objective_complete=assessment['objective_evidence'],
+                        promoted=False, candidate_only=True,
+                        shipped_gameplay_used_for_checkpoint_selection=args.select_on == 'gameplay',
+                        shipped_gameplay_evaluated=True,
+                        gameplay_evidence_limit='Shipped gameplay used during development is not an untouched test or generalization estimate',
+                        weights=copy.deepcopy({k: v.detach().to('cpu') for k, v in model.state_dict().items()}))
+            line += ' * retained candidate'
         history.append(entry)
         print(line, flush=True)
         if device.type == "cuda" and epoch == 1:
             print(f"Peak GPU memory {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB", flush=True)
     model.load_state_dict(best.pop("weights"))
     best.pop("score")
-    print(f"Keeping epoch {best['epoch']} by {best['criterion']} "
-          f"({best['selected_on']} CE {best['cross_entropy']:.5f}, acc {best['accuracy']:.4f}), "
-          f"not epoch {args.epochs}" if best["epoch"] != args.epochs else
-          f"Best epoch was the last one ({best['epoch']})", flush=True)
+    print(f"Retaining unpromoted epoch {best['epoch']} by {best['criterion']}: "
+          f"actual sequential gameplay {best['levels_completed']}/7. "
+          "Offline metrics did not select this checkpoint.", flush=True)
     return model, history, baseline, best, train_seeds, validation_seeds
 
 
 def verdict(history, baseline, best=None):
-    """State plainly whether the KEPT model beat the frame-blind baseline."""
+    """Describe offline diagnostics separately from actual gameplay evidence."""
     chosen = history[best["epoch"] - 1] if best else history[-1]
     split = "validation" if "validation" in chosen else "train"
     model_ce = chosen[split]["cross_entropy"]
     prior_ce = baseline[split]["cross_entropy"]
     if prior_ce is None:
-        return {"split": split, "beats_prior": None,
-                "message": "No baseline available: the prior has no labels to score."}
+        return {"split": split, "beats_prior": None, "offline_diagnostic": True, "promoted": False,
+                "message": "Offline diagnostic unavailable: the prior has no labels to score."}
     beats = model_ce < prior_ce
     # Accuracy is reported alongside because the two can disagree: a model can be
     # right more often than the prior while being worse calibrated than it, and
@@ -358,13 +398,16 @@ def verdict(history, baseline, best=None):
     return {"split": split, "epoch": chosen.get("epoch"), "model_cross_entropy": model_ce,
             "prior_cross_entropy": prior_ce, "model_accuracy": model_accuracy,
             "prior_accuracy": prior_accuracy, "beats_prior": beats,
-            "message": (f"{split} cross-entropy {model_ce:.5f} "
+            "offline_diagnostic": True, "promoted": False,
+            "gameplay_evaluated": "gameplay" in chosen,
+            "levels_completed": chosen.get("gameplay", {}).get("levels_completed"),
+            "objective_complete": bool(best and best.get("objective_complete")),
+            "message": (f"Offline diagnostic: {split} cross-entropy {model_ce:.5f} "
                         f"{'beats' if beats else 'does NOT beat'} the majority-action prior "
                         f"{prior_ce:.5f}" +
                         (f" (accuracy {model_accuracy:.4f} vs {prior_accuracy:.4f})"
                          if prior_accuracy is not None else "") +
-                        ("" if beats else " -- the loss curve is not evidence of learning here; "
-                         "judge this run on completion rate alone"))}
+                        ". This diagnostic neither selects nor promotes a checkpoint.")}
 
 
 def main():
@@ -397,14 +440,12 @@ def main():
                              "trunk, so matching the carried triple to a pad icon is a local op")
     parser.add_argument("--condition-channels", type=int, default=32)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--select-on", choices=("cross_entropy", "accuracy", "set_accuracy", "last"),
-                        default="cross_entropy",
-                        help="Which epoch's weights to keep. Cross-entropy is the default but it is "
-                             "only a proxy: measured here, the best-CE epoch did not complete more "
-                             "levels than a later overfitted one")
+    parser.add_argument("--select-on", type=selection_mode, choices=("gameplay", "last"),
+                        default="gameplay",
+                        help="Retain greatest actual seven-level gameplay progress (stable ties), or explicitly keep the final unpromoted candidate")
     parser.add_argument("--device", choices=("cuda", "cpu", "auto"), default="auto")
     parser.add_argument("--loader-workers", type=int, default=2)
-    parser.add_argument("--checkpoint-out", type=Path, help="Defaults to a separate path per architecture")
+    parser.add_argument("--checkpoint-out", type=Path, help="New candidate path; defaults to a unique file under checkpoints/candidates; existing files are never replaced")
     parser.add_argument("--report-out", type=Path)
     args = parser.parse_args()
     if args.channels is None:
@@ -412,8 +453,7 @@ def main():
     if args.blocks is None:
         args.blocks = 2 if args.architecture == "looped" else 4
     if args.checkpoint_out is None:
-        args.checkpoint_out = Path("checkpoints/ls20-looped-policy.pt" if args.architecture == "looped"
-                                   else "checkpoints/ls20-policy.pt")
+        args.checkpoint_out = Path("checkpoints/candidates") / f"ls20-{args.architecture}-{uuid.uuid4().hex}.pt"
     if min(args.heads, args.expansion, args.loops, args.train_min_loops) < 1:
         parser.error("heads, expansion, loops and train-min-loops must be positive")
     if args.train_min_loops > args.loops:
@@ -432,6 +472,13 @@ def main():
     missing = [str(path) for path in args.shards + (args.validation_shards or []) if not path.exists()]
     if missing:
         parser.error(f"missing shards: {', '.join(missing)}")
+
+    report_path = args.report_out or args.checkpoint_out.with_suffix('.training.json')
+    if report_path.resolve() == args.checkpoint_out.resolve():
+        parser.error('checkpoint and report paths must differ')
+    for path in (args.checkpoint_out, report_path):
+        if path.exists() or path.is_symlink():
+            parser.error(f'refusing to overwrite existing training artifact: {path}; choose a new output path')
 
     torch.manual_seed(args.seed)
     # TF32 silently rounds float32 matmuls to 10 mantissa bits. Off, so a number
@@ -465,12 +512,18 @@ def main():
         parser.error(str(error))
     decision = verdict(history, baseline, best)
 
-    checkpoint = save_checkpoint(
+    checkpoint = save_candidate(
         args.checkpoint_out, model.to("cpu"),
         data_format=shard["meta"][0].get("format"),
         generator_version=generator_versions[0] if len(generator_versions) == 1 else generator_versions,
         train_seeds=train_seeds, validation_seeds=validation_seeds, epochs=args.epochs,
         best_epoch=best["epoch"], best_cross_entropy=best["cross_entropy"],
+        offline_diagnostics_only=True, best_cross_entropy_meaning="diagnostic at selected epoch, not an offline selection minimum",
+        gameplay=best["gameplay"], levels_completed=best["levels_completed"],
+        shipped_gameplay_used_for_checkpoint_selection=best["shipped_gameplay_used_for_checkpoint_selection"],
+        shipped_gameplay_evaluated=best["shipped_gameplay_evaluated"],
+        gameplay_evidence_limit=best["gameplay_evidence_limit"],
+        objective_complete=best["objective_complete"], promoted=False, candidate_only=True,
         selected_on=best["selected_on"], select_on=args.select_on, batch_size=args.batch_size, lr=args.lr,
         samples=int(len(shard["actions"])), device=str(device), baseline=baseline,
         beats_prior=decision["beats_prior"],
@@ -481,22 +534,23 @@ def main():
                         "sampling": "uniform_per_batch", "loss": args.loop_loss,
                         "backpropagation": "full", "validation_loops": args.loops}
                        if args.architecture == "looped" else None),
-        trained=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-    # Reload immediately: a checkpoint that cannot be rebuilt is not a checkpoint.
-    load_checkpoint(args.checkpoint_out)
-
+        trained=datetime.now().astimezone().isoformat(timespec="seconds"))
     report = {"format": checkpoint["format"], "config": checkpoint["config"],
               "loop_training": checkpoint["loop_training"], "history": history, "baseline": baseline, "verdict": decision,
-              "best": best,
+              "best": best, "gameplay": best["gameplay"], "promoted": False, "candidate_only": True,
+              "objective_complete": best["objective_complete"],
+              "shipped_gameplay_used_for_checkpoint_selection": best["shipped_gameplay_used_for_checkpoint_selection"],
+              "gameplay_evidence_limit": best["gameplay_evidence_limit"],
               "train_seeds": train_seeds, "validation_seeds": validation_seeds,
               "checkpoint": str(args.checkpoint_out), "device": str(device),
               "parameters": checkpoint["parameters"]}
-    path = args.report_out or args.checkpoint_out.with_suffix(".training.json")
+    path = report_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    with path.open("x") as stream:
+        stream.write(json.dumps(report, indent=2, allow_nan=False) + "\n")
     print(f"Saved {args.checkpoint_out} (epoch {best['epoch']} of {args.epochs})\nReport {path}", flush=True)
     print(decision["message"], flush=True)
-    print("Imitation accuracy is a proxy; run pebby.agent.evaluate for the completion rate.", flush=True)
+    print(f"Actual sequential gameplay: {best['levels_completed']}/7. Candidate saved; no checkpoint was promoted.", flush=True)
 
 
 if __name__ == "__main__":

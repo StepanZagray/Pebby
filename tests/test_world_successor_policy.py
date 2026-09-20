@@ -234,6 +234,7 @@ class SuccessorPolicyTests(unittest.TestCase):
                 np.savez(root / f'{name}-bare.npz', **{k: v for k, v in payload.items() if k != 'next_optimal'})
             flags = ['--train', str(root / 'train.npz'), '--validation', str(root / 'validation.npz'),
                      '--device', 'cpu', '--epochs', '1', '--batch-size', '4',
+                     '--select-on', 'last',
                      '--successor-policy-weight', '0.5', '--glyph-recall', '--state-recall',
                      '--checkpoint-out', str(root / 'model.pt')]
             for key, value in TINY.items():

@@ -464,7 +464,8 @@ class WorldGlyphTests(unittest.TestCase):
             pretrained, glyph_checkpoint = gm.load_glyph_checkpoint(glyph_path)
             self.assertEqual(glyph_checkpoint["train_seeds"], [0, 1])
             flags = ["--train", str(root / "train.npz"), "--validation", str(root / "validation.npz"),
-                     "--epochs", "1", "--batch-size", "8", "--device", "cpu", "--seed", "0"]
+                     "--epochs", "1", "--batch-size", "8", "--device", "cpu", "--seed", "0",
+                     "--select-on", "last"]
             for key, value in TINY.items():
                 flags += [f"--{key.replace('_', '-')}", str(value)]
             plain_path, fresh_path, init_path = root / "plain.pt", root / "fresh.pt", root / "init.pt"

@@ -14,6 +14,22 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BANKS = {'reference-unequal-v1': {'label': 'Seven-reference unequal bank',
                 'path': ROOT / 'data/ls20-reference-unequal-v1'}}
 JOB_FORMAT = 'pebby.bank-regeneration.checkpoint.v1'
+# The reference bank was built by the two generator modules archived here.  The
+# versioned-generator repair deliberately left its manifest immutable, so the
+# two changed files need an explicit, independently pinned compatibility
+# receipt.  This is a local repository path, never a caller-supplied path.
+LEGACY_COMPATIBILITY_RECEIPT = ROOT / (
+    'pebby/compatibility/reference-unequal-v1/compatibility-receipt.json')
+LEGACY_COMPATIBILITY_RECEIPT_SHA256 = (
+    'e2ea500b8574b07b58b0bc593a93b4a618e02cbc9d701e572dc3524eb449af75')
+LEGACY_COMPATIBILITY_MANIFEST_SHA256 = (
+    'b3bfb1460b4c371fe98740eb2227351160a1de96280cc7c9d025bfb5bdbba376')
+LEGACY_COMPATIBILITY_BANK = 'reference-unequal-v1'
+LEGACY_COMPATIBILITY_CHANGED = {
+    str((ROOT / 'pebby/ls20/bank.py').resolve()),
+    str((ROOT / 'pebby/ls20/generate.py').resolve()),
+}
+LEGACY_COMPATIBILITY_ARCHIVE = ROOT / 'pebby/compatibility/reference-unequal-v1'
 # Derived read cache beside the bank. Deliberately not *.jsonl: the generator
 # rglobs data/**/*.jsonl as seed inventory and would ingest this file.
 INDEX_NAME = 'row-index.json'
@@ -144,6 +160,102 @@ class LevelBanks:
             try:tmp.unlink()
             except OSError:pass
 
+    def _legacy_source_compatibility(self, bank, manifest, binding, actual_code_hashes):
+        """Accept the one reviewed generator delta without changing the manifest.
+
+        The old manifest remains the authority for every source hash.  A
+        compatibility receipt can only cover the two versioned generator files,
+        and is itself pinned by this module.  This keeps an arbitrary rehash,
+        missing archive, edited receipt, or changed unlisted manifest source
+        fail-closed.
+        """
+        mismatches = {path for path, expected in manifest['code_hashes'].items()
+                      if actual_code_hashes[path] != expected}
+        default_path = (ROOT / 'data/ls20-reference-unequal-v1').resolve()
+        if bank == LEGACY_COMPATIBILITY_BANK and Path(self.banks[bank]['path']).resolve() == default_path \
+                and binding != LEGACY_COMPATIBILITY_MANIFEST_SHA256:
+            raise ValueError('default reference bank manifest binding changed')
+        if not mismatches:
+            return 'manifest_exact'
+        if bank != LEGACY_COMPATIBILITY_BANK or mismatches != LEGACY_COMPATIBILITY_CHANGED:
+            raise ValueError('bank source integrity check failed')
+        if Path(self.banks[bank]['path']).resolve() != default_path:
+            raise ValueError('legacy bank compatibility is bound to the default bank path')
+        receipt_path = LEGACY_COMPATIBILITY_RECEIPT
+        if not receipt_path.is_file() or self._hash(receipt_path) != LEGACY_COMPATIBILITY_RECEIPT_SHA256:
+            raise ValueError('legacy bank compatibility receipt is missing or changed')
+        receipt = read_json(receipt_path)
+        if receipt.get('format') != 'pebby.ls20.legacy-bank-compatibility.v1':
+            raise ValueError('legacy bank compatibility receipt format mismatch')
+        if receipt.get('bank') != LEGACY_COMPATIBILITY_BANK or receipt.get('manifest_sha256') != binding:
+            raise ValueError('legacy bank compatibility manifest binding mismatch')
+        if receipt.get('manifest_code_hashes') != manifest['code_hashes']:
+            raise ValueError('legacy bank compatibility old source binding mismatch')
+
+        archive_root = receipt.get('archive_root')
+        if archive_root != str(LEGACY_COMPATIBILITY_ARCHIVE.relative_to(ROOT)):
+            raise ValueError('legacy bank compatibility archive path mismatch')
+        archive_hashes = receipt.get('archive_code_hashes')
+        if not isinstance(archive_hashes, dict) or set(archive_hashes) != {
+                'bank.py.txt', 'generate.py.txt'}:
+            raise ValueError('legacy bank compatibility archive binding missing')
+        archive_manifest_paths = receipt.get('archive_manifest_paths')
+        if archive_manifest_paths != {
+                'bank.py.txt': 'pebby/ls20/bank.py',
+                'generate.py.txt': 'pebby/ls20/generate.py'}:
+            raise ValueError('legacy bank compatibility manifest archive mapping missing')
+        for relative, expected in archive_hashes.items():
+            path = (ROOT / archive_root / relative).resolve()
+            if path.parent != LEGACY_COMPATIBILITY_ARCHIVE.resolve() or self._hash(path) != expected:
+                raise ValueError('legacy bank compatibility archive changed')
+            manifest_path = str((ROOT / archive_manifest_paths[relative]).resolve())
+            if manifest_path not in manifest['code_hashes'] or manifest['code_hashes'][manifest_path] != expected:
+                raise ValueError('legacy bank compatibility archive does not match manifest')
+
+        reviewed = receipt.get('reviewed_current_code_hashes')
+        if not isinstance(reviewed, dict) or set(reviewed) != set(manifest['code_hashes']):
+            raise ValueError('legacy bank compatibility current source binding missing')
+        if reviewed != actual_code_hashes:
+            raise ValueError('legacy bank compatibility current source changed')
+        reviewed_mismatches = {path for path, expected in reviewed.items()
+                               if expected != manifest['code_hashes'][path]}
+        if reviewed_mismatches != LEGACY_COMPATIBILITY_CHANGED:
+            raise ValueError('legacy bank compatibility changed source set mismatch')
+
+        historical = receipt.get('historical_receipt')
+        if not isinstance(historical, dict) or historical.get('path') != (
+                str((LEGACY_COMPATIBILITY_ARCHIVE / 'receipt.json').relative_to(ROOT))):
+            raise ValueError('legacy bank compatibility historical receipt path mismatch')
+        if self._hash(ROOT / historical['path']) != historical.get('sha256'):
+            raise ValueError('legacy bank compatibility historical receipt changed')
+        verification = receipt.get('generator_verification')
+        if not isinstance(verification, dict) or verification.get('path') != (
+                'pebby/compatibility/reference-unequal-v1/generator-verification.json'):
+            raise ValueError('legacy bank compatibility verification path mismatch')
+        if verification.get('status') != 'passed' or not verification.get('legacy_sources_unchanged') \
+                or verification.get('existing_banks_modified'):
+            raise ValueError('legacy bank compatibility verification is not a passed preservation proof')
+        if self._hash(ROOT / verification['path']) != verification.get('sha256'):
+            raise ValueError('legacy bank compatibility verification changed')
+
+        proof = receipt.get('fixture_replay')
+        fixtures = proof.get('fixtures') if isinstance(proof, dict) else None
+        expected_fixtures = {
+            f'tests/fixtures/ls20_reference/tier{difficulty}.json' for difficulty in range(1, 8)}
+        if not isinstance(proof, dict) or proof.get('method') != (
+                'current build_level + native Ls20Scenario replay for all seven stored reference fixtures') \
+                or set(fixtures or ()) != expected_fixtures or proof.get('all_won') is not True \
+                or proof.get('all_three_lives_retained') is not True \
+                or proof.get('all_one_level_completed') is not True:
+            raise ValueError('legacy bank compatibility fixture proof is incomplete')
+        for relative in expected_fixtures:
+            item = fixtures[relative]
+            if not isinstance(item, dict) or self._hash(ROOT / relative) != item.get('sha256') \
+                    or item.get('final_won') is not True or item.get('final_lives') != 3 \
+                    or item.get('levels_completed') != 1:
+                raise ValueError('legacy bank compatibility fixture changed')
+        return 'legacy_archive_fixture_compatibility'
+
     def _refresh(self,bank):
         if not isinstance(bank,str) or bank not in self.banks:raise ValueError('unknown bank')
         spec=self.banks[bank]; directory=Path(spec['path']); manifest_path=directory/'manifest.json'
@@ -156,7 +268,11 @@ class LevelBanks:
             quotas=cfg.get(split+'_quotas')
             if quotas is not None and (len(quotas)!=7 or any(type(n) is not int or n<1 for n in quotas)
                                        or sum(quotas)!=cfg[split+'_count']):raise ValueError('invalid bank quotas')
-        for name in ('code_hashes','source_hashes'):
+        actual_code_hashes = {}
+        for path, sha in manifest.get('code_hashes', {}).items():
+            actual_code_hashes[path] = self._hash(path)
+        self._legacy_source_compatibility(bank, manifest, binding, actual_code_hashes)
+        for name in ('source_hashes',):
             if not isinstance(manifest[name],dict) or not manifest[name]:raise ValueError('bank source binding missing')
             for path,sha in manifest[name].items():
                 if self._hash(path)!=sha:raise ValueError('bank source integrity check failed')

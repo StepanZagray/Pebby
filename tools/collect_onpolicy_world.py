@@ -28,8 +28,8 @@ expert_budget = wd.expert_budget
 def collect_level(spec, policy, max_actions=48):
     if not 0 <= int(spec['seed']) < 1_000_000:
         raise ValueError('only generated training seeds allowed')
-    if policy.config()['history'] != 8 or not 1 <= max_actions <= 48:
-        raise ValueError('pilot requires H8 and 1..48 actions')
+    if policy.config()['history'] != 8 or type(max_actions) is not int or not 1 <= max_actions <= 150:
+        raise ValueError('collector requires H8 and 1..150 actions')
     initial, oracle, proof = wd.verified_context(spec, search_limit=600000)
     if initial is None:
         raise ValueError(f'context verification failed: {proof}')

@@ -295,7 +295,7 @@ class LoopedPolicyTests(unittest.TestCase):
                  redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
                 evaluate.main()
         self.assertEqual(raised.exception.code, 2)
-        self.assertIn("requires a looped checkpoint", stderr.getvalue())
+        self.assertIn("requires a checkpoint with mutable inference loops", stderr.getvalue())
 
 
 if __name__ == "__main__":

@@ -287,7 +287,7 @@ class StateRecallTests(unittest.TestCase):
             root = Path(directory)
             np.savez(root / "train.npz", meta=np.array(json.dumps({"source": "synthetic"})), **train)
             flags = ["--train", str(root / "train.npz"), "--epochs", "1", "--batch-size", "8",
-                     "--device", "cpu", "--seed", "0"]
+                     "--device", "cpu", "--seed", "0", "--select-on", "last"]
             for key, value in TINY.items():
                 flags += [f"--{key.replace('_', '-')}", str(value)]
             plain_path, recall_path = root / "plain.pt", root / "recall.pt"

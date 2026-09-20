@@ -471,6 +471,7 @@ class WorldModelTests(unittest.TestCase):
             truncated = {name: value for name, value in train.items() if name != "distances"}
             np.savez(root / "truncated.npz", **truncated)
             flags = ["--epochs", "2", "--batch-size", "8", "--device", "cpu", "--seed", "0",
+                     "--select-on", "last",
                      "--checkpoint-out", str(root / "out" / "world.pt"), "--report-out", str(root / "report.json")]
             torch.manual_seed(0)
             initial_hash = trainer.initial_state_sha256(make_model())
@@ -492,7 +493,8 @@ class WorldModelTests(unittest.TestCase):
                             "target_variance_mean", "counterfactual_top1", "copy_top1", "copy_mse",
                             "set_accuracy"):
                     self.assertIn(key, stats)
-            self.assertEqual(report["verdict"]["criterion"], "set_accuracy")
+            self.assertEqual(report["verdict"]["criterion"], "last")
+            self.assertEqual(report['gameplay_status'], 'gameplay_not_evaluated')
             self.assertEqual(report["verdict"]["split"], "validation")
             self.assertIn("beats_copy_baseline", report["verdict"])
             self.assertIn("prior", report["baseline"])
@@ -517,11 +519,13 @@ class WorldModelTests(unittest.TestCase):
                     with self.assertRaises(SystemExit) as failure:
                         trainer.main(["--train", str(root / f"{source}.npz")] + extra + flags)
                     self.assertNotEqual(failure.exception.code, 0)
-            # No validation split: selection falls back to the training split.
+            # No validation split: diagnostics use train; output is a fresh last artifact.
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                code = trainer.main(["--train", str(root / "train.npz"), "--max-states", "10"] + flags)
+                code = trainer.main(["--train", str(root / "train.npz"), "--max-states", "10"] + flags
+                                    + ['--checkpoint-out', str(root / 'second.pt'),
+                                       '--report-out', str(root / 'second.json')])
             self.assertEqual(code, 0)
-            self.assertEqual(json.loads((root / "report.json").read_text())["verdict"]["split"], "train")
+            self.assertEqual(json.loads((root / "second.json").read_text())["verdict"]["split"], "train")
 
 
 if __name__ == "__main__":

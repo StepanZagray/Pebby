@@ -66,8 +66,9 @@ class WorldContractTests(unittest.TestCase):
             torch.testing.assert_close(out['targets'][0, action],expected,atol=1e-6,rtol=1e-5)
         self.assertTrue(torch.isfinite(out['total']))
 
-    def test_policy_selection_uses_actual_loss_key(self):
-        self.assertEqual(train.selection_score({'policy':1.2}, 'policy_cross_entropy'),1.2)
+    def test_offline_policy_loss_cannot_select_a_checkpoint(self):
+        with self.assertRaisesRegex(ValueError, 'offline checkpoint selection'):
+            train.selection_score({'policy':1.2}, 'policy_cross_entropy')
 
     def test_failed_checkpoint_write_preserves_previous_epoch(self):
         with tempfile.TemporaryDirectory() as directory:

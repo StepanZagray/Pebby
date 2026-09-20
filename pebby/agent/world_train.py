@@ -84,8 +84,11 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import sys
+import tempfile
+import uuid
 
 import numpy as np
 import torch
@@ -95,6 +98,7 @@ from .world_training_objectives import world_losses
 from .world_runtime import configure_execution
 from .glyph_model import load_glyph_checkpoint
 from .curriculum_sampling import CurriculumSampler, DEFAULT_START, DEFAULT_END
+from .gameplay_gate import evaluate_sequential, assess_gameplay
 
 CONFIG_FLAGS = ("channels", "blocks", "heads", "expansion", "loops", "history", "temporal_layers",
                 "hud_channels", "hud_tokens", "latent", "reduce", "predictor_blocks", "predictor_hidden",
@@ -551,9 +555,71 @@ def resolve_device(requested):
 
 
 def selection_score(stats, criterion):
-    if criterion == "set_accuracy":
-        return -stats["set_accuracy"]
-    return stats["policy" if criterion == "policy_cross_entropy" else "total"]
+    if criterion != 'gameplay':
+        raise ValueError('offline checkpoint selection is disabled; use gameplay or explicit last')
+    assessment = assess_gameplay(stats, stats)
+    if assessment['status'] == 'no_evidence':
+        raise ValueError('checkpoint selection requires complete gameplay evidence: ' + assessment['reason'])
+    return -stats['levels_completed']
+
+
+def selection_mode(value):
+    if value not in ('gameplay', 'last'):
+        raise argparse.ArgumentTypeError('offline checkpoint selection is disabled; use gameplay or '
+                                         'explicit last (unpromoted artifact, gameplay not evaluated)')
+    return value
+
+
+def candidate_selection(entry, best, criterion):
+    """Return a new retention record only for more actual progress; stable ties."""
+    selection_mode(criterion)
+    if criterion == 'last':
+        score, assessment = -entry['epoch'], None
+    else:
+        score = selection_score(entry['gameplay'], criterion)
+        assessment = assess_gameplay(best['gameplay'] if best else entry['gameplay'], entry['gameplay'])
+        if assessment['status'] == 'no_evidence':
+            raise ValueError('checkpoint gameplay protocols differ: ' + assessment['reason'])
+        entry['gameplay_assessment'] = assessment
+    if best is not None and score >= best['score']:
+        return None
+    return dict(epoch=entry['epoch'], score=score, criterion=criterion,
+                selected_on='actual_sequential_gameplay' if criterion == 'gameplay' else 'last_epoch',
+                gameplay=copy.deepcopy(entry.get('gameplay')),
+                gameplay_status='evaluated' if criterion == 'gameplay' else 'gameplay_not_evaluated',
+                objective_complete=bool(assessment and assessment['objective_evidence']),
+                promoted=False, candidate_only=True, offline_diagnostics_only=True)
+
+
+def save_candidate(path, model, **metadata):
+    """Publish a new candidate atomically without replacing existing bytes."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.world-candidate-', suffix='.pt',
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+        result = save_world_checkpoint(temporary, model, **metadata)
+        # Rebuilding the CPU checkpoint must not perturb the next training epoch's RNG.
+        with torch.random.fork_rng(devices=[]):
+            load_world_checkpoint(temporary)
+        os.link(temporary, path)
+        return result
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def output_paths(args):
+    if args.checkpoint_out is None:
+        args.checkpoint_out = Path('checkpoints/candidates') / f'ls20-world-{uuid.uuid4().hex}.pt'
+    checkpoint = args.checkpoint_out
+    return dict(checkpoint=checkpoint,
+                last=checkpoint.with_name(checkpoint.stem + '.last.pt'),
+                running=checkpoint.with_name(checkpoint.stem + '.running.pt'),
+                progress=checkpoint.with_suffix('.progress.json'),
+                report=args.report_out or checkpoint.with_suffix('.training.json'))
 
 
 def verdict(history, baseline, best):
@@ -562,6 +628,9 @@ def verdict(history, baseline, best):
     split = "validation" if "validation" in chosen else "train"
     stats, bar = chosen[split], baseline[split]
     return {"split": split, "epoch": best["epoch"], "criterion": best["criterion"],
+            "offline_diagnostics_only": True, "promoted": False, "candidate_only": True,
+            "gameplay": chosen.get('gameplay'),
+            "gameplay_status": 'evaluated' if chosen.get('gameplay') is not None else 'gameplay_not_evaluated',
             "policy_cross_entropy": stats["policy"], "prior_policy_cross_entropy": bar["policy_cross_entropy"],
             "beats_prior_cross_entropy": stats["policy"] < bar["policy_cross_entropy"],
             "set_accuracy": stats["set_accuracy"], "prior_set_accuracy": bar["set_accuracy"],
@@ -639,7 +708,8 @@ def build_parser():
     parser.add_argument("--precision", choices=("float32", "bf16"), default="float32")
     parser.add_argument('--compile-core', action='store_true', help='Compile the repeated core during gradient-enabled training')
     parser.add_argument('--temporal-backend', choices=('auto', 'math', 'cudnn', 'flash'), default='auto')
-    parser.add_argument("--checkpoint-out", type=Path, default=Path("checkpoints/ls20-world.pt"))
+    parser.add_argument("--checkpoint-out", type=Path,
+                        help='New candidate path; defaults to a unique file under checkpoints/candidates')
     parser.add_argument("--report-out", type=Path)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=.05, help="Matrices only; no LN/bias/embeddings")
@@ -678,8 +748,9 @@ def build_parser():
                         help="Recompute frame stems and temporal/loop encoder to fit larger true batches")
     parser.add_argument("--encoder-chunk-size", type=int, default=0,
                         help="Bound encoder temporary memory; SIGReg still sees the entire batch")
-    parser.add_argument("--select-on", choices=("set_accuracy", "policy_cross_entropy", "total", "last"),
-                        default="set_accuracy", help="Which epoch to keep; validation if given, else train")
+    parser.add_argument("--select-on", type=selection_mode, default="gameplay",
+                        help='Retain greatest actual sequential gameplay progress (stable ties); '
+                             'explicit last keeps final unpromoted artifact without gameplay')
     for name, default in DEFAULT_WEIGHTS.items():
         parser.add_argument(f"--{name.replace('_', '-')}-weight", type=float, default=default,
                             help=f"Loss weight for {name} (default {default})")
@@ -692,6 +763,12 @@ def build_parser():
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    paths = output_paths(args)
+    if len({path.resolve() for path in paths.values()}) != len(paths):
+        parser.error('candidate checkpoint, last, running, progress and report paths must differ')
+    for path in paths.values():
+        if path.exists() or path.is_symlink():
+            parser.error(f'output already exists; choose fresh candidate paths: {path}')
     if args.require_fresh_initialization and any((args.initialize_checkpoint,
             args.initialize_glyph_checkpoint,args.initialize_cell_checkpoint,args.cell_recall)):
         parser.error('--require-fresh-initialization forbids pretrained model, glyph, or cell weights')
@@ -951,6 +1028,21 @@ def main(argv=None):
                         for split, data in (("train", train_data), ("validation", validation_data))
                         if data is not None and data.get("meta", {}).get("successor_labels") is not None}
     history, best = [], None
+    running_created = progress_created = False
+    selection_protocol = dict(select_on=args.select_on, promoted=False, candidate_only=True,
+                              trainer_source_sha256=file_digest(Path(__file__)),
+                              shipped_gameplay_used_for_checkpoint_selection=args.select_on == 'gameplay',
+                              offline_metrics_used_for_selection=False,
+                              gameplay_status='evaluated' if args.select_on == 'gameplay' else 'gameplay_not_evaluated',
+                              per_level_action_cap=300 if args.select_on == 'gameplay' else None,
+                              repeated_target_exposure=args.select_on == 'gameplay',
+                              untouched_test_or_generalization_claim=False)
+    if args.select_on == 'gameplay':
+        print('Checkpoint retention uses actual sequential gameplay after every epoch (300 actions per level). '
+              'Shipped games are reused for development selection, not an untouched generalization test. '
+              'All saved artifacts remain unpromoted.', flush=True)
+    else:
+        print('Explicit last artifact mode: gameplay_not_evaluated; final weights remain unpromoted.', flush=True)
     for epoch in range(1, args.epochs + 1):
         entry = {"epoch": epoch, "lr": scheduler.get_last_lr()[0],
                  "train": run_epoch(model, train_tensors, device, weights, args.batch_size,
@@ -964,24 +1056,38 @@ def main(argv=None):
             with torch.inference_mode():
                 entry["validation"] = run_epoch(model, validation_tensors, device, weights, args.batch_size,
                                                  precision=args.precision)
-        scored = entry.get("validation", entry["train"])
-        score = -epoch if args.select_on == "last" else selection_score(scored, args.select_on)
+        if args.select_on == 'gameplay':
+            weights_sha256 = initial_state_sha256(model)
+            entry['gameplay'] = evaluate_sequential(model, device, per_level_cap=300)
+            if initial_state_sha256(model) != weights_sha256:
+                raise RuntimeError('policy weights changed during gameplay evaluation')
+            entry['gameplay']['policy_weights_sha256'] = weights_sha256
+            print(f"Epoch {epoch}: actual sequential gameplay {entry['gameplay']['levels_completed']}/7 | "
+                  f"{entry['gameplay']['actions']} actions, {entry['gameplay']['lives_left']} lives left", flush=True)
+        else:
+            entry['gameplay'] = None
+            entry['gameplay_status'] = 'gameplay_not_evaluated'
+        selected = candidate_selection(entry, best, args.select_on)
         marker = ""
-        if best is None or score < best["score"]:
-            best = {"epoch": epoch, "score": score, "criterion": args.select_on,
-                    "selected_on": "validation" if "validation" in entry else "train",
+        if selected is not None:
+            best = {**selected,
                     "weights": copy.deepcopy({k: v.detach().to("cpu") for k, v in model.state_dict().items()})}
             marker = " *"
         history.append(entry)
-        print(f"Epoch {epoch}/{args.epochs} | {describe(entry, baseline)}{marker}", flush=True)
+        print(f"Epoch {epoch}/{args.epochs} offline diagnostics | {describe(entry, baseline)}{marker}", flush=True)
         if curriculum is not None:
             print(f"Curriculum difficulty counts {entry['train']['difficulty_counts']} | "
                   f"{args.batch_size} distinct levels per batch", flush=True)
-        progress_path = args.checkpoint_out.with_suffix(".progress.json")
+        progress_path = paths['progress']
         progress_path.parent.mkdir(parents=True, exist_ok=True)
-        progress_path.write_text(json.dumps({"history": history, "epochs": args.epochs}, indent=2) + "\n")
-        save_world_checkpoint(args.checkpoint_out.with_name(args.checkpoint_out.stem + ".running.pt"),
+        with progress_path.open('w' if progress_created else 'x') as handle:
+            handle.write(json.dumps({"history": history, "epochs": args.epochs,
+                                     **selection_protocol}, indent=2) + "\n")
+        progress_created = True
+        # Only this run's transient snapshot is replaceable; the first write is exclusive.
+        (save_world_checkpoint if running_created else save_candidate)(paths['running'],
                               model, epoch=epoch, train=str(args.train),
+                              **selection_protocol, gameplay=entry.get('gameplay'),
                               batch_size=args.batch_size, data_meta=train_data.get("meta"),
                               successor_labels=successor_labels,
                               on_policy_source=on_policy_source,
@@ -990,21 +1096,25 @@ def main(argv=None):
                               execution=execution,
                               initialization=initialization,
                               curriculum=curriculum_metadata(curriculum))
+        running_created = True
         if device.type == "cuda" and epoch == 1:
             print(f"Peak GPU memory {torch.cuda.max_memory_allocated() / 2 ** 30:.2f} GiB", flush=True)
-    # Preserve the last network weights as well as the selected
-    # policy snapshot: latent grounding may improve after action accuracy peaks.
+    # Retain final weights as a separate unpromoted artifact, independently of gameplay ranking.
     last_weights = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
     model.load_state_dict(best.pop("weights"))
     best.pop("score")
     decision = verdict(history, baseline, best)
     print(f"Keeping epoch {best['epoch']} by {best['criterion']} on {best['selected_on']}", flush=True)
 
-    checkpoint = save_world_checkpoint(
+    checkpoint = save_candidate(
         args.checkpoint_out, model.to("cpu"),
         train=str(args.train), validation=str(args.validation) if args.validation else None,
         train_seeds=train_seeds, validation_seeds=validation_seeds, epochs=args.epochs,
         best_epoch=best["epoch"], select_on=args.select_on, selected_on=best["selected_on"],
+        promoted=False, candidate_only=True, gameplay=best['gameplay'],
+        gameplay_status=best['gameplay_status'], objective_complete=best['objective_complete'],
+        shipped_gameplay_used_for_checkpoint_selection=args.select_on == 'gameplay',
+        selection_protocol=selection_protocol,
         batch_size=args.batch_size, lr=args.lr, weight_decay=args.weight_decay, loss_weights=weights,
         samples=int(len(train_tensors["frames"])), device=str(device), baseline=baseline, verdict=decision,
         data_meta=train_data.get("meta"), successor_labels=successor_labels,
@@ -1023,15 +1133,21 @@ def main(argv=None):
         curriculum=curriculum_metadata(curriculum),
         drop_last=args.drop_last, optimizer_steps=steps_per_epoch * args.epochs,
         trained=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-    load_world_checkpoint(args.checkpoint_out)  # A checkpoint that cannot be rebuilt is not one.
-    last_path = args.checkpoint_out.with_name(args.checkpoint_out.stem + ".last.pt")
+    last_path = paths['last']
     model.load_state_dict(last_weights)
     last_selection = {"epoch": args.epochs, "criterion": "last"}
     last_meta = {key: value for key, value in checkpoint.items()
                  if key not in ("format", "config", "parameters", "weights")}
     last_meta.update(best_epoch=args.epochs, select_on="last", selected_on="last_epoch",
-                     verdict=verdict(history, baseline, last_selection))
-    save_world_checkpoint(last_path, model, **last_meta)
+                     verdict=verdict(history, baseline, last_selection),
+                     gameplay=history[-1].get('gameplay'),
+                     gameplay_status='evaluated' if history[-1].get('gameplay') else 'gameplay_not_evaluated',
+                     objective_complete=bool(history[-1].get('gameplay', {}) and
+                                             history[-1]['gameplay']['completed']),
+                     shipped_gameplay_used_for_checkpoint_selection=False,
+                     selection_protocol={**selection_protocol, 'select_on': 'last',
+                         'shipped_gameplay_used_for_checkpoint_selection': False})
+    save_candidate(last_path, model, **last_meta)
 
     peak = torch.cuda.max_memory_allocated() / 2 ** 30 if device.type == "cuda" else None
     report = {"format": checkpoint["format"], "config": checkpoint["config"], "parameters": checkpoint["parameters"],
@@ -1040,21 +1156,27 @@ def main(argv=None):
               "on_policy_source": on_policy_source,
               "loss_weights": weights, "history": history, "baseline": baseline, "verdict": decision,
               "best": best, "train_seeds": train_seeds, "validation_seeds": validation_seeds,
+              **selection_protocol, "gameplay": best['gameplay'],
+              "objective_complete": best['objective_complete'],
               "checkpoint": str(args.checkpoint_out), "last_checkpoint": str(last_path), "device": str(device),
               "peak_gpu_memory_gib": peak, "checkpoint_loops": args.checkpoint_loops,
               "execution": execution, "initialization": initialization}
-    path = args.report_out or args.checkpoint_out.with_suffix(".training.json")
+    path = paths['report']
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    with path.open('x') as handle:
+        handle.write(json.dumps(report, indent=2, allow_nan=False) + "\n")
     print(f"Saved {args.checkpoint_out}\nReport {path}", flush=True)
-    print(f"Kept epoch {decision['epoch']} ({decision['split']}, criterion {decision['criterion']}): "
+    print(f"Unpromoted candidate epoch {best['epoch']}, selected by {best['criterion']}; "
+          + (f"actual sequential gameplay {best['gameplay']['levels_completed']}/7."
+             if best['gameplay'] else 'gameplay_not_evaluated.'), flush=True)
+    print(f"Offline diagnostics for epoch {decision['epoch']} ({decision['split']}): "
           f"policy CE {decision['policy_cross_entropy']:.4f} vs prior {decision['prior_policy_cross_entropy']:.4f}"
           f" ({'beats' if decision['beats_prior_cross_entropy'] else 'does NOT beat'}); set accuracy "
           f"{decision['set_accuracy']:.3f} vs prior {decision['prior_set_accuracy']:.3f}; prediction MSE "
           f"{decision['prediction_mse']:.4f} vs copy {decision['copy_mse']:.4f} "
           f"({'beats' if decision['beats_copy_baseline'] else 'does NOT beat'} copy); counterfactual top-1 "
           f"{decision['counterfactual_top1']:.3f} vs chance {decision['chance_top1']:.2f}", flush=True)
-    print("Set accuracy is a proxy; closed-loop completion decides.", flush=True)
+    print('Offline diagnostics did not select or promote this checkpoint.', flush=True)
     return 0
 
 

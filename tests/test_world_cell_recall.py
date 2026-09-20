@@ -131,7 +131,8 @@ class CellRecallTests(unittest.TestCase):
             for split, arrays in (('train', train), ('validation', validation)):
                 np.savez(root / f'{split}.npz', meta=np.array(json.dumps({'source': 'synthetic'})), **arrays)
             flags = ['--train', str(root / 'train.npz'), '--validation', str(root / 'validation.npz'),
-                     '--epochs', '1', '--batch-size', '8', '--device', 'cpu', '--cell-recall']
+                     '--epochs', '1', '--batch-size', '8', '--device', 'cpu', '--cell-recall',
+                     '--select-on', 'last']
             for key, value in TINY.items():
                 flags += [f"--{key.replace('_', '-')}", str(value)]
             imported = root / 'imported.pt'

@@ -216,6 +216,18 @@ def save_checkpoint(path, model, **metadata):
 def load_checkpoint(path, device="cpu"):
     """Rebuild the saved network in eval mode. Returns (model, checkpoint)."""
     checkpoint = torch.load(path, map_location=device, weights_only=True)
+    if checkpoint.get("format") == "pebby.ls20-spatial-outcome-policy.v1":
+        from .spatial_outcome_policy import load_checkpoint as load_spatial_checkpoint
+        return load_spatial_checkpoint(path, device)
+    if checkpoint.get("format") == "pebby.ls20-spatial-outcome-policy.v2":
+        from .spatial_v2_policy import load_checkpoint as load_spatial_v2_checkpoint
+        return load_spatial_v2_checkpoint(path, device)
+    if checkpoint.get("format") == "pebby.ls20-spatial-route-outcome-policy.v1":
+        from .spatial_route_outcome_policy import load_checkpoint as load_route_checkpoint
+        return load_route_checkpoint(path, device)
+    if checkpoint.get("format") == "pebby.ls20-spatial-semantic-outcome-policy.v1":
+        from .spatial_semantic_outcome_policy import load_checkpoint as load_semantic_checkpoint
+        return load_semantic_checkpoint(path, device)
     if checkpoint.get("format") == "pebby.structured-workspace-readout.v1":
         from .structured_workspace_controller import load_workspace_policy_checkpoint
         return load_workspace_policy_checkpoint(path, device)

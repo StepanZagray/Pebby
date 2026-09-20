@@ -9,6 +9,7 @@ dependencies = [
     "arcengine>=0.9.3",
     "model-microscope",
     "hostai==0.1.0",
+    "arc-agi>=0.9.9",
 ]
 
 [tool.uv.sources]
@@ -20,3 +21,8 @@ hostai = { path = "vendor/hostai-0.1.0-py3-none-any.whl" }
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
 explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9,<10",
+]

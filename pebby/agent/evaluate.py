@@ -46,6 +46,7 @@ import json
 from pathlib import Path
 import sys
 
+from arcengine import GameState
 import torch
 
 from ..ls20 import names
@@ -272,6 +273,97 @@ def budgeted_rollout(policy, env, budget, device=None, temperature=.5, on_stall=
             "endings": [a["ending"] for a in attempts]}
 
 
+@torch.inference_mode()
+def diverse_rollout(policy, env, max_actions, device=None, oracle_length=None, *, resets=True,
+                    **knobs):
+    """Play one env through `DiverseLivesController`, the way `inference.py` serves it.
+
+    Native lives, and after a GAME_OVER a level-only RESET (charged as one
+    action, exactly as the competition session charges it) until `max_actions`
+    is spent or the game is won. `resets=False` stops at the first GAME_OVER
+    instead, which is the isolated three-lives-only reading. The stall mask,
+    penalties and per-life seeded sampling are runtime heuristics bolted onto
+    the policy, never something it learned; `knobs` are the controller's.
+    """
+    from types import MethodType
+    from .diverse_controller import DiverseLivesController
+    if hasattr(policy, "eval"):
+        policy.eval()
+    goals_per_level = level_goal_counts(env)
+    frame = env.reset()
+    # RESET after a GAME_OVER restarts the current level only, as the competition
+    # session enforces; the engine's own handler would fully restart the game
+    # whenever its action counter reads zero.
+    env.game.handle_reset = MethodType(lambda game: game.level_reset(), env.game)
+    controller = DiverseLivesController(policy, device, **knobs)
+    controller.start(frame, level_index=env.level_index)
+    ending, actions, reset_count, lives_lost, stalls = "capped", 0, 0, 0, 0
+    while actions < max_actions:
+        if env.state == GameState.GAME_OVER:
+            if not resets:
+                ending = "game_over"
+                break
+            observation = env.perform(0)
+            actions += 1
+            reset_count += 1
+            controller.observe(observation.frame, None, reset=True)
+            frame = observation.frame
+            continue
+        old_lives, old_level = env.lives(), env.level_index
+        index = controller.decide(frame, level_index=env.level_index, lives=old_lives, state=env.state)
+        observation = env.perform(names.ACTION_IDS[index])
+        actions += 1
+        if observation.frame is None:
+            break  # Defensive: an empty frame is never worth encoding.
+        life_lost = env.lives() < old_lives
+        lives_lost += life_lost
+        stalls += observation.frame == frame
+        controller.observe(observation.frame, index, life_lost=life_lost,
+                           level_changed=env.level_index != old_level, reset=False)
+        frame = observation.frame
+        if observation.won:
+            ending = "win"
+            break
+    cleared_levels = env.levels_completed
+    goals_cleared = sum(goals_per_level[:cleared_levels])
+    if cleared_levels < env.level_count:
+        goals_cleared += sum(env.goals_solved())
+    return {"completed": ending == "win", "levels_completed": cleared_levels,
+            "levels_total": env.level_count, "goals_cleared": goals_cleared,
+            "goals_total": sum(goals_per_level), "actions": actions, "resets": reset_count,
+            "lives_lost": lives_lost, "stalls": stalls, "ending": ending, "protocol": "diverse",
+            "controller": controller.metadata, "optimal": oracle_length,
+            "actions_vs_optimal": actions / oracle_length if oracle_length else None,
+            "final_level": env.level_index, "lives_left": env.lives()}
+
+
+def diverse_completion(policy, levels, optima, multiplier=5, device=None, context_indices=None,
+                       **knobs):
+    """Aggregate `diverse_rollout` over levels, one env each, under `multiplier` x optimum."""
+    runs = []
+    for index, (level, optimum) in enumerate(zip(levels, optima)):
+        env = (Ls20Scenario(level, context_indices[index]) if context_indices is not None
+               else Ls20Env(levels=[level]))
+        budget = max(1, int(multiplier * optimum))
+        runs.append({"run": index, "budget": budget,
+                     **diverse_rollout(policy, env, budget, device, optimum, **knobs)})
+    total = sum(run["levels_total"] for run in runs)
+    completed = sum(run["levels_completed"] for run in runs)
+    goals_total = sum(run["goals_total"] for run in runs)
+    return {"protocol": "diverse", "multiplier": multiplier, "learned": False,
+            "runtime_heuristics": True,
+            "controller": runs[0]["controller"] if runs else None,
+            "levels": total, "completed": completed,
+            "completion_rate": completed / total if total else None,
+            "goals_cleared": sum(run["goals_cleared"] for run in runs), "goals_total": goals_total,
+            "goal_rate": sum(run["goals_cleared"] for run in runs) / goals_total if goals_total else None,
+            "mean_actions": sum(run["actions"] for run in runs) / len(runs) if runs else None,
+            "resets": sum(run["resets"] for run in runs),
+            "lives_lost": sum(run["lives_lost"] for run in runs),
+            "budget_exhausted": sum(not run["completed"] for run in runs),
+            "runs": runs}
+
+
 def budgeted_completion(policy, levels, optima, multiplier=5, device=None, temperature=.5,
                         on_stall="next-best", sample_seed=0, context_indices=None):
     """Aggregate `budgeted_rollout` over levels, one env each."""
@@ -351,6 +443,7 @@ def completion_rate(policy, levels=None, max_actions=200, device=None, oracles=N
             "runs": runs}
 
 
+@torch.inference_mode()
 def optimality_rate(specs, policy, max_actions=120, device=None, on_stall="next-best",
                     context_indices=None):
     """How often the policy's move is ONE OF the optimal moves, not the oracle's pick.
@@ -476,6 +569,43 @@ def generated_levels(count, difficulty, seed):
     return [build_level(spec) for spec in specs], [spec["optimal_actions"] for spec in specs]
 
 
+def default_max_actions(source, shipped_level=None):
+    """Return the CLI cap for a source when the user leaves it unspecified.
+
+    Function callers retain the historical ``max_actions=200`` defaults.  The
+    command-line evaluator uses caps that cover the protocol it selected: a
+    generated strict episode gets 300 actions, one isolated shipped level gets
+    five times its human baseline, and the sequential shipped run gets the sum
+    of those seven per-level caps.
+    """
+    from ..ls20 import shipped
+    if source == "generated":
+        return 300
+    if source.startswith("bank "):
+        return 300
+    if source == "shipped":
+        return sum(5 * baseline for baseline in shipped.HUMAN_BASELINE)
+    if source == "shipped_level":
+        if shipped_level not in range(1, shipped.LEVEL_COUNT + 1):
+            raise ValueError("shipped_level must be in 1..7")
+        return 5 * shipped.HUMAN_BASELINE[shipped_level - 1]
+    if source.startswith("shipped level "):
+        try:
+            level = int(source.rsplit(" ", 1)[1])
+        except ValueError as error:
+            raise ValueError(f"unknown evaluation source {source!r}") from error
+        return default_max_actions("shipped_level", level)
+    raise ValueError(f"unknown evaluation source {source!r}")
+
+
+def parameter_count(policy):
+    """Count loaded parameters when an older checkpoint omitted metadata."""
+    method = getattr(policy, "parameter_count", None)
+    if callable(method):
+        return int(method())
+    return sum(parameter.numel() for parameter in policy.parameters())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -488,9 +618,12 @@ def main():
     parser.add_argument("--levels", type=int, help="Play this many generated levels, one env each")
     parser.add_argument("--bank", type=Path, help="Play the levels in this bank file, one env each")
     parser.add_argument("--limit", type=int, help="Use only the first N levels of --bank")
-    parser.add_argument("--protocol", choices=("strict", "budgeted", "both"), default="both",
+    parser.add_argument("--protocol", choices=("strict", "budgeted", "both", "diverse"), default="both",
                         help="strict: one greedy attempt under --max-actions. budgeted: the "
-                             "benchmark's own terms, a total budget with RESET and retries")
+                             "benchmark's own terms, a total budget with RESET and retries. "
+                             "diverse: native lives and level-only RESET through the same "
+                             "DiverseLivesController inference.py serves (runtime heuristics, "
+                             "not learning); --temperature and --sample-seed feed it")
     parser.add_argument("--temperature", type=float, default=.5,
                         help="Sampling temperature for the budgeted protocol; 0 is argmax, which "
                              "makes retries pointless because the trajectory repeats exactly")
@@ -503,7 +636,10 @@ def main():
                              "costs one planner build per level")
     parser.add_argument("--difficulty", type=int, default=2)
     parser.add_argument("--seed", type=int, default=1_000_000, help="First generated-level seed")
-    parser.add_argument("--max-actions", type=int, default=200)
+    parser.add_argument("--max-actions", type=int, default=None,
+                        help="Strict action cap. Defaults to 300 for generated levels, "
+                             "5x the selected human baseline for one shipped level, "
+                             "or 5x the sum of shipped human baselines for the sequential set.")
     parser.add_argument("--on-stall", choices=("next-best", "repeat"), default="next-best",
                         help="What to do when an action leaves the frame unchanged. 'repeat' is "
                              "unmodified greedy argmax, which measurably loops against walls")
@@ -521,7 +657,7 @@ def main():
         parser.error("--limit is positive and only applies to --bank")
     if args.bank is not None and not args.bank.exists():
         parser.error(f"bank not found: {args.bank}")
-    if args.max_actions < 1 or args.seed < 0:
+    if ((args.max_actions is not None and args.max_actions < 1) or args.seed < 0):
         parser.error("max-actions must be positive and seed must not be negative")
     if args.temperature < 0 or args.budget_multiplier <= 0:
         parser.error("temperature must not be negative and budget-multiplier must be positive")
@@ -537,8 +673,10 @@ def main():
         parser.error(f"{args.checkpoint} is not a usable LS20 policy checkpoint: {error}")
 
     if args.loops is not None:
-        if args.loops < 1 or policy.config().get("architecture") not in ("looped", "world"):
-            parser.error("--loops must be positive and requires a looped checkpoint")
+        if (args.loops < 1 or policy.config().get("architecture") not in ("looped", "world")
+                or not hasattr(policy, "loops")):
+            parser.error("--loops must be positive and requires a checkpoint with mutable inference loops; "
+                         "spatial policies keep their encoder depth fixed")
         policy.loops = args.loops
 
     levels, oracles, specs, source = None, None, None, "shipped"
@@ -566,8 +704,23 @@ def main():
         parser.error(f"could not load levels: {error}")
     if levels is not None and not levels:
         parser.error("no levels to evaluate")
+    if args.max_actions is None:
+        args.max_actions = default_max_actions(source, args.shipped_level)
 
     report = {"format": REPORT_FORMAT}
+    if args.protocol == "diverse":
+        from ..ls20 import shipped as shipped_cache
+        diverse_levels = shipped_levels() if levels is None else levels
+        diverse_optima = shipped_cache.HUMAN_BASELINE if levels is None else oracles
+        if args.shipped_level is not None:
+            diverse_optima = [shipped_cache.HUMAN_BASELINE[args.shipped_level - 1]]
+        report["diverse"] = diverse_completion(policy, diverse_levels, diverse_optima,
+                                               args.budget_multiplier, device,
+                                               list(range(7)) if levels is None else
+                                               ([args.shipped_level - 1] if args.shipped_level
+                                                else context_indices),
+                                               temperature=args.temperature,
+                                               base_seed=args.sample_seed)
     if args.protocol in ("strict", "both"):
         contexts = ([args.shipped_level - 1] if args.shipped_level is not None
                     else context_indices)
@@ -598,7 +751,9 @@ def main():
                                                context_indices[:args.optimality]
                                                if context_indices is not None else None)
     report.update({"checkpoint": str(args.checkpoint), "device": str(device),
-                   "parameters": checkpoint.get("parameters"),
+                   "parameters": (checkpoint.get("parameters")
+                                  if checkpoint.get("parameters") is not None
+                                  else parameter_count(policy)),
                    "architecture": policy.config().get("architecture", "cnn"),
                    "inference_loops": getattr(policy, "loops", policy.config().get("loops")),
                    "checkpoint_loops": checkpoint.get("config", {}).get("loops"),
@@ -607,6 +762,13 @@ def main():
                    "seed": args.seed if source == "generated" else None,
                    "bank": str(args.bank) if args.bank else None})
 
+    diverse = report.get("diverse")
+    if diverse:
+        print(f"DIVERSE ({diverse['multiplier']:g}x optimal, T={diverse['controller']['temperature']}, "
+              f"runtime heuristics, not learning) | {diverse['completed']}/{diverse['levels']} levels "
+              f"completed ({diverse['completion_rate']:.1%}) | goals {diverse['goals_cleared']}/"
+              f"{diverse['goals_total']} | {diverse['mean_actions']:.1f} actions, "
+              f"{diverse['resets']} resets, {diverse['lives_lost']} lives lost", flush=True)
     budgeted = report.get("budgeted")
     if budgeted:
         print(f"BUDGETED ({budgeted['multiplier']:g}x optimal, T={budgeted['temperature']}) | "
@@ -614,7 +776,7 @@ def main():
               f"({budgeted['completion_rate']:.1%}) | goals {budgeted['goals_cleared']}/"
               f"{budgeted['goals_total']} | {budgeted['mean_actions']:.1f} actions over "
               f"{budgeted['mean_attempts']:.2f} attempts", flush=True)
-    if args.protocol == "budgeted":
+    if args.protocol in ("budgeted", "diverse"):
         text = json.dumps(report, indent=2, allow_nan=False) + "\n"
         if args.report_out:
             args.report_out.parent.mkdir(parents=True, exist_ok=True)

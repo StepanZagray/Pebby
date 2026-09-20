@@ -74,8 +74,16 @@ def main():
         default=str(DEFAULT_UI_DIR),
         help="Directory with index.html, style.css, app.js and board.js served under /ui/",
     )
+    parser.add_argument(
+        "--controller",
+        choices=Engine.CONTROLLERS,
+        default="diverse",
+        help="How the agent operation picks a move: 'diverse' passes the policy's logits through "
+             "runtime heuristics (stall mask, anti-loop penalties, seeded per-life sampling; not "
+             "learned); 'argmax' serves the bare policy",
+    )
     args = parser.parse_args()
-    engine = Engine(args.checkpoint)
+    engine = Engine(args.checkpoint, controller=args.controller)
     # Load the policy now rather than on the first request, so an unusable
     # checkpoint is named at startup instead of surfacing as a UI badge later.
     # With no checkpoint on disk this returns immediately and torch stays out.

@@ -87,7 +87,7 @@ SPEC_FIELDS = ("format", "generator_version", "seed", "difficulty", "difficulty_
                "geometry_sha256", "geometry_d4_sha256", "geometry_split", "geometry_version",
                "solution_mechanics", "patroller_count", "tick_period", "changing_attributes",
                "distractor_count", "nonrequired_distractor_count", "non_required_distractor_count",
-               "gameplay_sha256", "generation_exclusions")
+               "gameplay_sha256", "generation_exclusions", "mechanics_version")
 SPEC_KEYS = frozenset(SPEC_FIELDS)
 # The subset that decides what the game does. Everything else is provenance, so
 # it is kept out of the oracle cache key and cannot be used to thrash the cache.
@@ -176,10 +176,19 @@ def validate_level(value):
     refills = sorted({_cell(cell, "Each refill") for cell in _list(value["refills"], "refills", 16)})
     goals, cyclers = [], []
     for goal in _list(value["goals"], "goals", 8):
-        _check(isinstance(goal, dict) and set(goal) == {"cell", "triple"},
-               'Each goal must be {"cell": [c, r], "triple": [s, c, r]}.')
-        goals.append({"cell": list(_cell(goal["cell"], "Each goal cell")),
-                      "triple": _triple(goal["triple"], "Each goal triple")})
+        _check(isinstance(goal, dict) and {"cell", "triple"} <= set(goal)
+               and set(goal) <= {"cell", "triple", "vanishing_ring"},
+               'Each goal needs cell and triple, with an optional boolean vanishing_ring.')
+        canonical = {"cell": list(_cell(goal["cell"], "Each goal cell")),
+                     "triple": _triple(goal["triple"], "Each goal triple")}
+        if "vanishing_ring" in goal:
+            _check(type(goal["vanishing_ring"]) is bool, "vanishing_ring must be true or false.")
+            _check(not goal["vanishing_ring"] or value.get("generator_version") == 4,
+                   "Vanishing goal rings require generator_version 4.")
+            # Explicit false is equivalent to the legacy plain ring.
+            if goal["vanishing_ring"]:
+                canonical["vanishing_ring"] = True
+        goals.append(canonical)
     _check(goals, "A level needs at least one goal.")
     for cycler in _list(value["cyclers"], "cyclers", 32):
         _check(isinstance(cycler, dict) and set(cycler) == {"cell", "kind"},
@@ -291,18 +300,26 @@ def build_env(level):
     return Ls20Scenario(generate.build_level(dict(level)), context)
 
 
-def replay(level, actions, history=None):
+def replay(level, actions, history=None, observer=None):
     """Rebuild the game and apply every action. Returns (env, frames, frame).
 
     `frames` is what the final action rendered, which is what an ARC-AGI-3 agent
     receives; `frame` is the last frame still available. A terminal action
     returns no frames upstream, so the previous one is carried forward rather
     than handing the client a null board.
+
+    `history` is a `PolicyHistory` fed every replayed frame. `observer` is
+    anything with `start(frame)` and `observe(frame, action_index, *,
+    life_lost, level_changed, reset)` -- a `DiverseLivesController`, or the
+    history adapter below -- and is rebuilt from scratch on every call, which is
+    what keeps the endpoint stateless.
     """
     env = build_env(level)
     frame = env.render()
     if history is not None:
         history.observe(frame, reset=True)
+    if observer is not None:
+        observer.start(frame)
     frames = [frame]
     for action in actions:
         old_lives, old_level = env.lives(), env.level_index
@@ -310,10 +327,35 @@ def replay(level, actions, history=None):
         if observation.frames:
             frames = observation.frames
             frame = observation.frame
+            life_lost, level_changed = env.lives() < old_lives, env.level_index != old_level
             if history is not None:
                 history.observe(frame, names.ACTION_IDS.index(action),
-                                reset=env.lives() < old_lives or env.level_index != old_level)
+                                reset=life_lost or level_changed)
+            if observer is not None:
+                observer.observe(frame, names.ACTION_IDS.index(action), life_lost=life_lost,
+                                 level_changed=level_changed, reset=False)
     return env, frames, frame
+
+
+class HistoryObserver:
+    """Build the policy's causal history through `pebby.agent.history.for_policy`.
+
+    `for_policy` decides from the checkpoint's own config whether a history is
+    needed at all (world and structured policies) and how long it is, so the
+    architecture string is never inspected here.
+    """
+
+    def __init__(self, model):
+        self.model = model
+        self.history = None
+
+    def start(self, frame):
+        from pebby.agent.history import for_policy  # noqa: PLC0415 - imports torch
+        self.history = for_policy(self.model, frame)
+
+    def observe(self, frame, action_index, *, life_lost, level_changed, reset):
+        if self.history is not None:
+            self.history.observe(frame, action_index, reset=life_lost or level_changed or reset)
 
 
 def status_of(env):
@@ -483,10 +525,13 @@ class AgentPolicy:
         self._model = model
         self.loaded = True
         self.reason = None
-        self.metadata = {key: value for key, value in checkpoint.items() if key != "weights"}
+        self.metadata = {key: value for key, value in checkpoint.items()
+                         if key not in {"weights", "encoder_weights", "planner_weights", "perceptor_weights"}}
         self.parameters = self.metadata.get("parameters")
         if self.parameters is None and hasattr(model, "parameter_count"):
             self.parameters = model.parameter_count()
+        if self.parameters is None:
+            self.parameters = sum(parameter.numel() for parameter in model.parameters())
         return True
 
     def act(self, frame, history=None):
@@ -514,10 +559,17 @@ class AgentPolicy:
 class Engine:
     """Every operation the UI and the HostAI bridge can ask for."""
 
-    def __init__(self, checkpoint=None, *, banks=None):
+    CONTROLLERS = ("diverse", "argmax")
+
+    def __init__(self, checkpoint=None, *, banks=None, controller="diverse"):
         from pebby.level_banks import LevelBanks
+        _check(controller in self.CONTROLLERS, f"controller must be one of {list(self.CONTROLLERS)}.")
         self.agent = AgentPolicy(checkpoint)
         self.banks = banks if banks is not None else LevelBanks()
+        # "diverse": the policy's logits pass through pebby.agent.diverse_controller
+        # (stall mask, anti-loop penalties, seeded per-life sampling) -- runtime
+        # heuristics, not learning. "argmax": the bare policy, as before.
+        self.controller = controller
 
     def info(self):
         # Attempt the load here rather than reporting "not loaded" for a
@@ -544,6 +596,7 @@ class Engine:
             "triple": {"shapes": names.SHAPE_COUNT, "colors": list(names.COLORS),
                        "rotations": list(names.ROTATIONS)},
             "agent": self.agent.describe(),
+            "controller": self.controller,
         }
 
     def boot(self, limit=50):
@@ -599,21 +652,49 @@ class Engine:
         return oracle_advice(level, actions)
 
     def act(self, level, actions):
+        """The next action for the replayed position.
+
+        A finished game is answered before the policy is consulted: after a
+        GAME_OVER the answer is RESET (action 0), which restarts the current
+        level; after a WIN there is no action and `finished` is true. Otherwise
+        the reply carries the policy's own move probabilities and, with the
+        diverse controller, a `selection` record of what the runtime heuristics
+        did to them.
+        """
         if not self.agent.ensure():
             return {"action": None, "probabilities": None, "loaded": False,
                     "reason": self.agent.reason}
         try:
-            history = None
-            if self.agent._model.config().get("architecture") == "world":
-                from pebby.agent.history import PolicyHistory
-                history = PolicyHistory(self.agent._model)
-            env, _, frame = replay(level, actions, history)
-            action, probabilities = self.agent.act(frame, history)
+            model = self.agent._model
+            if self.controller == "diverse":
+                from pebby.agent.diverse_controller import DiverseLivesController  # noqa: PLC0415
+                observer = DiverseLivesController(model)
+            else:
+                observer = HistoryObserver(model)
+            env, _, frame = replay(level, actions, observer=observer)
+            status = status_of(env)
+            if status["won"]:
+                return {"action": None, "probabilities": None, "loaded": True, "finished": True,
+                        "reason": "The game is won; there is nothing left to do.", "status": status}
+            if status["finished"]:
+                return {"action": 0, "probabilities": None, "loaded": True, "finished": True,
+                        "reason": "The game is over: RESET (action 0) restarts the current level.",
+                        "status": status}
+            if self.controller == "diverse":
+                index = observer.decide(frame, level_index=env.level_index, lives=env.lives(),
+                                        state=env.state)
+                action = names.ACTION_IDS[index]
+                import torch  # noqa: PLC0415 - lazy on purpose
+                probabilities = torch.tensor(observer.last["raw"]).softmax(-1).tolist()
+                selection = {"controller": observer.metadata["controller"], **observer.last}
+            else:
+                action, probabilities = self.agent.act(frame, observer.history)
+                selection = {"controller": "argmax"}
         except Exception as error:  # noqa: BLE001 - a broken policy must not 500
             return {"action": None, "probabilities": None, "loaded": True,
                     "reason": f"The policy failed on this frame: {type(error).__name__}: {error}"}
-        return {"action": action, "probabilities": probabilities, "loaded": True,
-                "reason": None, "status": status_of(env)}
+        return {"action": action, "probabilities": probabilities, "loaded": True, "finished": False,
+                "reason": None, "status": status, "selection": selection}
 
     def dispatch(self, request):
         """One JSON object in, one JSON object out. Both HTTP routes land here."""

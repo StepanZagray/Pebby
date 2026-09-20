@@ -34,7 +34,7 @@ class ClosingTrainerTests(unittest.TestCase):
               '--closing-action-attestation',str(self.attestation),'--closing-action-sha256',self.sha,
               '--curriculum','--on-policy-fraction','.5','--curriculum-start','1','0','0','0','0',
               '--curriculum-end','1','0','0','0','0','--batch-size','2','--epochs','1','--device','cpu',
-              '--drop-last','--checkpoint-out',str(out),'--seed','5']
+              '--drop-last','--checkpoint-out',str(out),'--seed','5','--select-on','last']
         for key,value in {**TINY,'history':8}.items():args.extend(['--'+key.replace('_','-'),str(value)])
         return args,out
 
