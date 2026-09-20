@@ -1,22 +1,14 @@
-# Pebby documentation
+# Documentation
 
-The root [README](../README.md) is the project entry point. This directory keeps
-only durable documentation: domain rules, proof boundaries, operational workflows,
-and repository conventions. Checkpoint metrics, experiment ledgers, generated-bank
-snapshots, and browser evidence are deliberately not maintained here.
+- [Model status](../MODEL_STATUS.md): current Run B checkpoint, results, and limits.
+- [Training operations](multigame-training-operations.md): data repair, training,
+  stop/resume, and checkpoint provenance.
+- [Multi-game generators](multigame-generators.md): family contracts, certified
+  collection, split identities, and dataset preparation.
+- [Generator acceptance caveats](generator-acceptance-caveats.md): bounded evidence
+  and remaining family-specific limitations.
+- [Domain language](../CONTEXT.md): model, data, and evaluation terminology.
+- [Development](development.md): repository layout and validation.
 
-## Documents
-
-- [Game and proof](game-and-proof.md) — LS20 mechanics and what the planner and
-  generated-level pipeline establish.
-- [Training and model operation](agent-and-training.md) — create data, train a
-  checkpoint, evaluate it, and start the runtime.
-- [Multi-game training operations](multigame-training-operations.md) — start,
-  stop and resume training; repair click labels and check dataset coverage.
-- [Navigation research experiments](navigation-research.md) — compare encoder
-  adaptation and action readouts, measure primitive mastery, and collect learner states.
-- [Neural planning experiment](neural-planning.md) — learned multi-step imagination,
-  controlled horizon comparison, and the later search comparison.
-- [Viewer and HostAI integration](viewer.md) — run the local viewer and connect
-  the HostAI runtime.
-- [Development notes](development.md) — repository layout, checks, and provenance.
+The current project is multi-game v2. Earlier LS20 experiments and the removed
+viewer are recoverable from Git history.

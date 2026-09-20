@@ -110,8 +110,8 @@ def parse_args(argv=None):
         help="use the small wiring-test architecture; checkpoint remains smoke-quality evidence",
     )
     parser.add_argument(
-        "--architecture", choices=ARCHITECTURES, default="v1",
-        help="model network layout: 'v1' is the original globally pooled action path with the "
+        "--architecture", choices=ARCHITECTURES, default="v2",
+        help="model network layout (default: v2): 'v1' is the original globally pooled action path with the "
              "query/bias click head, 'v2' keeps the 8x8 feature grid on the action path and "
              "decodes clicks with a contextual convolutional head",
     )

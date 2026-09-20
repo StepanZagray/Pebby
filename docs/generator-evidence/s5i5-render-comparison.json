@@ -1,0 +1,87 @@
+{
+  "family": "s5i5",
+  "seed": 888,
+  "split": "train",
+  "frames": [
+    {
+      "tier": 1,
+      "kind": "official",
+      "sha256": "6c0878b45d6b24e9fe0097ba85bb3c9191dc86a5f9e8e67a0550aaf6d2d9f169"
+    },
+    {
+      "tier": 1,
+      "kind": "generated",
+      "sha256": "cd94eb097d899fec0f74e93f3570f730131951dacc56740f339f55464aa1cac8"
+    },
+    {
+      "tier": 2,
+      "kind": "official",
+      "sha256": "596fdf8e48fe8282749c857124fa226dfa88a4608c75f5524dd6d74df753bf00"
+    },
+    {
+      "tier": 2,
+      "kind": "generated",
+      "sha256": "d020f95555f610871bbeb87428b411124185d25392acbe4c7b886f6b5dff4f17"
+    },
+    {
+      "tier": 3,
+      "kind": "official",
+      "sha256": "bb19b103cb03c531098fcccc82e6f3bcc230c8f3c8965c890f0d73664db0e247"
+    },
+    {
+      "tier": 3,
+      "kind": "generated",
+      "sha256": "c079ea169d6e8340ef22bbadc0b68409fb46f8f91feec6b4a663a80fd669698e"
+    },
+    {
+      "tier": 4,
+      "kind": "official",
+      "sha256": "3f202919e3992b48816a6e01548f6bf0d9d12225d28014076a0e93fb1edbd186"
+    },
+    {
+      "tier": 4,
+      "kind": "generated",
+      "sha256": "bee8e1669c28b3fa6a378c331fabaf069d0be9b5f6b5d6d28ac79267e7a8db83"
+    },
+    {
+      "tier": 5,
+      "kind": "official",
+      "sha256": "e5b0590ff7d16aa95b839851c6591d178035af954adcd61df0cf542170ec6bb7"
+    },
+    {
+      "tier": 5,
+      "kind": "generated",
+      "sha256": "4121b4a3767406377c292a61c3994ee011552d3e95a4459e44667941bc8e260c"
+    },
+    {
+      "tier": 6,
+      "kind": "official",
+      "sha256": "79115d4ee03fe19ecaff62c5471288fc4d6548e2e71f37fc476f20288b9902c9"
+    },
+    {
+      "tier": 6,
+      "kind": "generated",
+      "sha256": "d78c677e7abce844ebf85acb76a6450178769d8447096b1dd0f303d2983e9645"
+    },
+    {
+      "tier": 7,
+      "kind": "official",
+      "sha256": "c08bcdcaa563446e0897f81b9383a7cc648d662968219e181ba09e6c69a4c6a3"
+    },
+    {
+      "tier": 7,
+      "kind": "generated",
+      "sha256": "6b9dda5cdaa5f0d6df271d50305de91f0aed3ee5128341657dce02b58acc04da"
+    },
+    {
+      "tier": 8,
+      "kind": "official",
+      "sha256": "35bd1dd3f14317f861a60feb95fc00c570f6af1d0017cb4817fa27e87e048c58"
+    },
+    {
+      "tier": 8,
+      "kind": "generated",
+      "sha256": "bdc3f1a5100bee1a14476562ed3f66a8c8f7814ec4e161ff8441bffb71bdec47"
+    }
+  ]
+}

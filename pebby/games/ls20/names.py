@@ -5,4 +5,3 @@ them so there is only one mapping to audit against the vendored game.
 """
 
 from pebby.ls20.names import *  # noqa: F401,F403
-

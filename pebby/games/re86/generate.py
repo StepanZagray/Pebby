@@ -76,7 +76,7 @@ FULL_STANDARD_CONTRACT = {
     ],
     "evidence": {
         "official_tier_characterization": (
-            ".scratch/multigame-resume/full-standard/re86.md + "
+            "docs/generator-evidence/re86.md + "
             "pebby/games/re86/reference_profiles.py"
         ),
         "solution_mechanics": "spec.solution_mechanics recomputed by native replay",

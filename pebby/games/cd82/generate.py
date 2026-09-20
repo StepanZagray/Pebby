@@ -44,12 +44,12 @@ FULL_STANDARD_CONTRACT = {
         for difficulty in DIFFICULTIES
     ],
     "evidence": {
-        "official_tier_characterization": ".scratch/multigame-resume/full-standard/cd82.md#official-reference-characterization",
-        "solution_mechanics": ".scratch/multigame-resume/full-standard/cd82.md#procedural-generation-and-proof",
-        "native_budget": ".scratch/multigame-resume/full-standard/cd82.md#authoritative-source-and-complete-mechanics",
-        "context_engine_replay": ".scratch/multigame-resume/full-standard/cd82.md#root-acceptance-2026-09-18",
-        "novelty_split": ".scratch/multigame-resume/full-standard/cd82.md#identity-split-and-finite-support",
-        "bounded_rejections": ".scratch/multigame-resume/full-standard/cd82.md#bounded-quality-audit",
+        "official_tier_characterization": "docs/generator-evidence/cd82.md#official-reference-characterization",
+        "solution_mechanics": "docs/generator-evidence/cd82.md#procedural-generation-and-proof",
+        "native_budget": "docs/generator-evidence/cd82.md#authoritative-source-and-complete-mechanics",
+        "context_engine_replay": "docs/generator-evidence/cd82.md#root-acceptance-2026-09-18",
+        "novelty_split": "docs/generator-evidence/cd82.md#identity-split-and-finite-support",
+        "bounded_rejections": "docs/generator-evidence/cd82.md#bounded-quality-audit",
     },
     "caveats": [
         "each tier is calibrated from one official reference and the final generated census is modest",

@@ -1,0 +1,34 @@
+{
+  "family": "bp35",
+  "worker": "/home/stepan/Projects/code/Pebby-full-bp35",
+  "scope": "root integration verification; no dataset or model training",
+  "actual_contract_status": "pending_audit",
+  "pending_admission_override": true,
+  "official_levels": 9,
+  "games": [
+    {
+      "split": "train",
+      "status": "won",
+      "levels_completed": 9,
+      "steps": 289,
+      "whole_game_sha256": "ba42ccf3c8c1402b5eef12d4fad2842458d6c7ad5588c0a33aa2cc72b4a38c1e",
+      "canonical_geometries": 9,
+      "gameplays": 9
+    }
+  ],
+  "seed": 87019,
+  "game_index_offset": 0,
+  "file_hashes": {
+    "pebby/games/bp35/__init__.py": "309a60ea71517152519c6a1dae05470b6a9c448d7369ab7ed0e9c45415a698c2",
+    "pebby/games/bp35/bank.py": "d167fc73d4d8a99bfbcc6a631dd53bc4dd204998b5522694a03300cf03772866",
+    "pebby/games/bp35/env.py": "7cd0bc40890cbe23b3c06f16ef8bb9588e6738924e1304fc60bf25a4a363b358",
+    "pebby/games/bp35/generate.py": "f4f49c20173cf0b4d92dbeddebc368a1e0ebcf9a2ddde8d316d158e138bb26f7",
+    "pebby/games/bp35/layout.py": "a887cf1c440bcbee145144017d69cc919f7786a7b1564bc14cbff93fc578ee72",
+    "pebby/games/bp35/names.py": "391c2b64c4a52ef6c06677f45e3294ec25a54a81c26d8a5a19de952f2ae9ccc1",
+    "pebby/games/bp35/plan.py": "33a56b3f6b7557760b2711f3e74e687609c6ea89ec1e02e8ccbf873a8f6723a0"
+  },
+  "geometry_overlap_reason": null,
+  "geometry_overlaps": [],
+  "status": "passed",
+  "seconds": 57.66240395199566
+}

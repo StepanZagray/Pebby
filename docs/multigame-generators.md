@@ -4,12 +4,10 @@ Pebby keeps one generator per public training family at `pebby/games/<slug>/gene
 Rules stay family-native: shared code validates contracts, seeds generation, constructs sequential
 games, and records evidence; it does not replace 24 engines with one symbolic generator.
 
-Admission changes as reviews close. Treat
-[`STATUS.md`](../.scratch/multigame-resume/full-standard/STATUS.md) as authoritative for current
-family readiness and
-[`ACCEPTANCE-CAVEATS.md`](../.scratch/multigame-resume/full-standard/ACCEPTANCE-CAVEATS.md) as
-authoritative for accepted limitations. Run the current preflight before collection rather than
-inferring readiness from this guide or a historical snapshot.
+All 24 training-family adapters are retained. Their acceptance is bounded by
+[the generator caveats](generator-acceptance-caveats.md); it does not establish
+that the learned model can complete their games. Run the current preflight
+before collection rather than inferring readiness from a historical snapshot.
 
 ## Family interface
 
@@ -217,9 +215,8 @@ experiment agent must read the full thread and choose the design and budget.
 
 Acceptance means bounded source, generator, native-engine, split, and
 integration checks passed. It is neither learned-generalization evidence nor
-an exhaustive novelty/optimality proof. The authoritative current limitations
-are in
-[`ACCEPTANCE-CAVEATS.md`](../.scratch/multigame-resume/full-standard/ACCEPTANCE-CAVEATS.md);
-the experiment gate and handoff are in
-[`OBJECTIVE.md`](../.scratch/multigame-resume/full-standard/OBJECTIVE.md) and
-[`EXPERIMENT-THREAD-HANDOFF.md`](../.scratch/multigame-resume/full-standard/EXPERIMENT-THREAD-HANDOFF.md).
+an exhaustive novelty/optimality proof. The accepted limitations
+are preserved in [generator acceptance caveats](generator-acceptance-caveats.md).
+Training commands and the current corpus limitations are in
+[training operations](multigame-training-operations.md); measured controller
+results are in [model status](../MODEL_STATUS.md).

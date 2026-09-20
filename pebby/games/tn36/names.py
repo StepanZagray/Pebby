@@ -77,4 +77,3 @@ OPCODE_EFFECTS = {
     34: ("dx", -4),
     63: ("color", 15),
 }
-

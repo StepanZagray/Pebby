@@ -67,7 +67,7 @@ FULL_STANDARD_CONTRACT = {
         for difficulty in DIFFICULTIES
     ],
     "evidence": {
-        "official_tier_characterization": ".scratch/multigame-resume/full-standard/s5i5.md#official-reference-characterization",
+        "official_tier_characterization": "docs/generator-evidence/s5i5.md#official-reference-characterization",
         "solution_mechanics": "pebby/games/s5i5/generate.py:_solution_mechanics",
         "native_budget": "third_party/arc3_games/s5i5.py:1952-1987,2181-2245",
         "context_engine_replay": "tests/games/test_s5i5.py:test_complete_generated_game_replays_all_native_contexts",
@@ -75,8 +75,8 @@ FULL_STANDARD_CONTRACT = {
         "bounded_rejections": "tests/games/test_s5i5_quality.py:test_bounded_all_tier_quality_audit",
         "official_copy_exclusion": "tests/games/test_s5i5_official_copy.py",
         "tier8_recipe_variation": "tests/games/test_s5i5_tier8_variation.py",
-        "three_split_full_games": ".scratch/multigame-resume/full-standard/s5i5-final-root-{train,validation,test}.json",
-        "native_frame_comparison": ".scratch/multigame-resume/full-standard/s5i5-render-comparison.json",
+        "three_split_full_games": "docs/generator-evidence/s5i5-final-root-{train,validation,test}.json",
+        "native_frame_comparison": "docs/generator-evidence/s5i5-render-comparison.json",
     },
     "caveats": [
         "One shipped level exists per tier; tolerances are engineering bands, not population intervals.",

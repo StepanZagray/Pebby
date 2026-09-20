@@ -735,7 +735,7 @@ def test_cli_parses_architecture_and_hidden_dim_flags(tmp_path):
 
     common = ["--train-manifest", "a", "--validation-manifest", "b", "--out-dir", str(tmp_path)]
     args = cli.parse_args(common)
-    assert args.architecture == "v1"
+    assert args.architecture == "v2"
     assert args.hidden_dim == MultiGameModelConfig().hidden_dim
 
     args = cli.parse_args([*common, "--architecture", "v2", "--hidden-dim", "128"])

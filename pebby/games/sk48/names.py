@@ -64,4 +64,3 @@ ACTION_DELTAS = {
     ACTION_LEFT: (-1, 0),
     ACTION_RIGHT: (1, 0),
 }
-

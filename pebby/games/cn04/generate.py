@@ -63,7 +63,7 @@ FULL_STANDARD_CONTRACT = {
         "context_engine_replay": "spec.proof native differential replay at difficulty-1",
         "novelty_split": "semantic D4 hash, gameplay hash, and official sprite-set rejection",
         "bounded_rejections": "spec.generation_exclusions and generate.last_rejections",
-        "root_acceptance": ".scratch/multigame-resume/full-standard/cn04.md: independent source, schema, native episode, and visual checks",
+        "root_acceptance": "docs/generator-evidence/cn04.md: independent source, schema, native episode, and visual checks",
     },
     "caveats": (
         "Each tier is calibrated around one shipped level; tolerances are engineering bounds, not confidence intervals.",

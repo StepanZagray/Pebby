@@ -52,7 +52,7 @@ def checked_replay(env, actions):
 def test_full_standard_contract_is_root_reviewed_ready():
     assert FULL_STANDARD_CONTRACT["status"] == "ready"
     assert FULL_STANDARD_CONTRACT["evidence"]["independent_closure"] == (
-        ".scratch/multigame-resume/full-standard/external-astra-re86-sb26/"
+        "docs/generator-evidence/external-astra-re86-sb26/"
         "sb26-closure-detailed.md"
     )
     assert FULL_STANDARD_CONTRACT["evidence"]["enriched_provenance"] == (

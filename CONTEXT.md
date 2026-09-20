@@ -1,33 +1,27 @@
 # Pebby domain language
 
-Pebby is a learned controller specialized to the known LS20 rules. The vendored
-engine defines the game. This context names the contracts used when discussing
-training and evaluation; checkpoint-specific results belong in model status and
-source-bound research evidence.
+Pebby's current controller is multi-game architecture v2, Run B: a recurrent
+imitation policy trained on generated games from 24 known families. The vendored
+engines define each game's rules. Checkpoint-specific claims belong in
+[model status](MODEL_STATUS.md).
 
 | Term | Meaning and boundary |
 |---|---|
-| Public history | The observations and actions available to the controller. A bounded frame window is distinct from persistent memory across windows or life resets. |
-| Root | One decision point together with its causal public history. Multiple roots from one level are correlated. |
-| Branch | One candidate action's successor from a root. Counterfactual branches are teacher supervision, not extra actions executed by the policy. |
-| Teacher | Exact game planning used to create labels or diagnostic controls. Teacher success is not learned-controller success. |
-| Pretrained controller | A model with prior learned capabilities used to select actions; its state adapter, memory and tool access are part of the evaluated system. |
-| Curriculum designer | Proposes training situations or intermediate objectives. Proposal validity and teacher-label correctness are distinct responsibilities. |
-| Tool-assisted controller | Chooses or executes external procedures such as exact search. System success does not by itself establish that its neural component learned the procedure. |
-| Action horizon | Number of future action transitions explicitly composed during prediction or planning. |
-| Refinement depth | Repeated computation on a representation. More refinement does not by itself extend the action horizon. |
-| Remaining-route value | Predicted cost or distance to eventual completion. A one-action predictor can receive long-horizon supervision through this target. |
-| Goal-directed competence | Choosing actions and completing episodes according to the actual goal; sensitive to valid changes in goal placement or identity. A readable goal representation alone does not establish this competence. |
-| Learner-state teaching | Execute the current learner on training levels, then label states it actually visits with an independent teacher. Repeating collection after policy updates is distinct from repeatedly fitting a fixed cache. |
-| Compositional competence | Reusing learned navigation and mechanics on combinations, orders, or layouts excluded from the fitting examples. |
-| Belief memory | A learned or explicit record of previously observed information needed when the current observation window is insufficient. |
-| Ideal world model | A learned transition model of one fixed rule set whose predictions match the game engine on every public quantity. Pebby's learned half; judged by transition accuracy against the engine. |
-| Goal test | A predicate over states that says whether a state is a success. The planner receives goals in this form; a distance to a fixed location is one heuristic for one goal kind, never the goal itself. |
-| Goal-agnostic planner | Search over the world model that finds a state passing the goal test, using at most a goal-conditioned progress estimate to stay tractable. Pebby's second half; judged by whether it plans for a new goal on the same rules without redesign. |
-| Sequential completion | One game session progresses through all seven shipped levels under the declared life and action budgets. |
-| Isolated completion | One level is evaluated from a fresh start. Isolated wins cannot be added together and reported as sequential completion. |
-| Development panel | Evaluation examples exposed during diagnosis, checkpoint selection, or design iteration. |
-| Confirmation panel | Examples excluded from training and development decisions, opened only after a candidate and acceptance rule are fixed. |
+| Family | One known game rule set with its own native engine, curriculum and teacher. |
+| Whole game | An ordered sequence of all the family's levels, retaining native context and recurrent history. |
+| Public history | Frames, previous actions and observed outcomes available to the controller; hidden engine state is excluded. |
+| Teacher | Exact or bounded native planning used to label generated states; teacher success is not learned-policy success. |
+| Certified route | A teacher witness replayed successfully in the native engine under the recorded context. |
+| Recovery route | A teacher-labelled continuation after a learner or random perturbation; the provenance distinguishes those perturbations. |
+| Canonical input | A stored observation/action variant inverted to its original controls, geometry and palette before learning. |
+| Click region | An engine-verified set of equivalent click targets; bounded one-step equivalence is not arbitrary future equivalence. |
+| Auxiliary dynamics | Action-conditioned frame/event prediction trained alongside the policy; currently unused for planning. |
+| Gameplay selection | Choosing a checkpoint using actual generated-game rollouts, rather than offline prediction accuracy alone. |
+| Frozen checkpoint | One immutable set of weights; metrics from different epochs cannot be combined as its result. |
+| Generated validation | Generated examples held apart from fitting but exposed to model selection; not an untouched confirmation benchmark. |
+| Official training-family evaluation | Frozen-policy play on official levels of the 24 known families, separate from generated validation. |
+| Held-out phase | Frozen-policy play on m0r0 after the training-family phase, with no intervening tuning. |
 
-The current effort is indexed by [Find the training path to all seven LS20 levels](.scratch/ls20-seven-levels/map.md).
-The durable game and teacher boundaries are in [Game and proof](docs/game-and-proof.md).
+Generator acceptance establishes bounded data and teacher checks, not model
+mastery or unlimited puzzle novelty. See [generator caveats](docs/generator-acceptance-caveats.md)
+and [training operations](docs/multigame-training-operations.md).

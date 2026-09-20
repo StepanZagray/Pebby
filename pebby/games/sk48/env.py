@@ -183,4 +183,3 @@ def replay(env, actions):
         if env.levels_completed > before or observation.state == GameState.WIN:
             return True
     return bool(observation and env.levels_completed > before)
-

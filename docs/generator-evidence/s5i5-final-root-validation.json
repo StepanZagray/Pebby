@@ -1,0 +1,38 @@
+{
+  "family": "s5i5",
+  "worker": "/home/stepan/Projects/code/Pebby-full-s5i5",
+  "scope": "root integration verification; no dataset or model training",
+  "actual_contract_status": "pending_audit",
+  "pending_admission_override": true,
+  "official_levels": 8,
+  "games": [
+    {
+      "split": "validation",
+      "status": "won",
+      "levels_completed": 8,
+      "steps": 154,
+      "whole_game_sha256": "376eed85dc69c89da9cc5243518eee48c7e378a854e12872c47fdbae3715dc29",
+      "canonical_geometries": 8,
+      "gameplays": 8
+    }
+  ],
+  "seed": 87019,
+  "game_index_offset": 1,
+  "file_hashes": {
+    "pebby/games/s5i5/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "pebby/games/s5i5/bank.py": "df7db5035860910e88f3633f279c8c7c3fadfc760edc262737d711e3e9e3e28a",
+    "pebby/games/s5i5/env.py": "68d49f2414b63a8d9fda48ab95d3f83f1e3506100cce085b056dfb5380bc27e5",
+    "pebby/games/s5i5/generate.py": "7339817ba776e316cddc4c6ccbbf0dc360a57de2644bcf2e4cab26660c09b49d",
+    "pebby/games/s5i5/generation_quality.py": "238ccec2d08213de2258f4b6baa63ea5dca3418ec0b3b750db1bff6edcedef5c",
+    "pebby/games/s5i5/layout.py": "ee8fc6bdf01e7bdc59d070dea2c8c39345d8ea5df0b5ab91b086582c27104494",
+    "pebby/games/s5i5/names.py": "ea7776f336c14cb720e2029ba63b6837d607e307fb8961aaf5cfddb2438934bf",
+    "pebby/games/s5i5/official_identity.py": "1b8476ffba9d00965547d957d70c36a91e4792de259d27d8d45d221a18bca68f",
+    "pebby/games/s5i5/plan.py": "1bc5788284fcca33c41419680d0ab4f137a4ae7f598722b794297ce6d982191e",
+    "pebby/games/s5i5/quality_audit.py": "c178ef96181c69db7792ff00bafec960174ae581d0b84864e983c2e418b10f6c",
+    "pebby/games/s5i5/reference_profiles.py": "c3f60f1240bb3dc214156b0cd38e83ddcd52220aae0ba95e59db91aebc70845e"
+  },
+  "geometry_overlap_reason": null,
+  "geometry_overlaps": [],
+  "status": "passed",
+  "seconds": 88.31188299999997
+}

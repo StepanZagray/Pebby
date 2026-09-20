@@ -62,13 +62,13 @@ FULL_STANDARD_CONTRACT = {
         for d in DIFFICULTIES
     ),
     "evidence": {
-        "official_tier_characterization": ".scratch/multigame-resume/full-standard/ar25.md#official-tier-characterization",
-        "solution_mechanics": ".scratch/multigame-resume/full-standard/ar25.md#mechanic-participation",
-        "native_budget": ".scratch/multigame-resume/full-standard/ar25.md#native-budgets",
-        "context_engine_replay": ".scratch/multigame-resume/full-standard/ar25.md#native-replay",
-        "novelty_split": ".scratch/multigame-resume/full-standard/ar25.md#identity-and-splits",
-        "bounded_rejections": ".scratch/multigame-resume/full-standard/ar25.md#bounded-generation",
-        "root_acceptance": ".scratch/multigame-resume/full-standard/ar25.md#root-acceptance",
+        "official_tier_characterization": "docs/generator-evidence/ar25.md#official-tier-characterization",
+        "solution_mechanics": "docs/generator-evidence/ar25.md#mechanic-participation",
+        "native_budget": "docs/generator-evidence/ar25.md#native-budgets",
+        "context_engine_replay": "docs/generator-evidence/ar25.md#native-replay",
+        "novelty_split": "docs/generator-evidence/ar25.md#identity-and-splits",
+        "bounded_rejections": "docs/generator-evidence/ar25.md#bounded-generation",
+        "root_acceptance": "docs/generator-evidence/ar25.md#root-acceptance",
     },
     "caveats": (
         "Each tier has one official reference; tolerances are engineering bounds, not confidence intervals.",

@@ -65,7 +65,7 @@ FULL_STANDARD_CONTRACT = {
         "context_engine_replay": "spec.proof.context_engine_verified plus sequential replay tests",
         "novelty_split": "geometry_sha256/geometry_d4_sha256/gameplay_sha256",
         "bounded_rejections": "generation_exclusions and generation_limits",
-        "independent_closure": ".scratch/multigame-resume/full-standard/external-astra-re86-sb26/sb26-closure-detailed.md",
+        "independent_closure": "docs/generator-evidence/external-astra-re86-sb26/sb26-closure-detailed.md",
         "enriched_provenance": "tests/games/test_sb26.py::test_generate_game_is_exactly_eight_increasing_contexts_and_build_replays_it",
     },
     "caveats": (

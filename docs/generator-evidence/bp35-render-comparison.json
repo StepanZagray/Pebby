@@ -1,0 +1,97 @@
+{
+  "family": "bp35",
+  "seed": 888,
+  "split": "train",
+  "frames": [
+    {
+      "tier": 1,
+      "kind": "official",
+      "sha256": "e673f0158ffbf5ffa45f3f32f30a91c9dc7f22ad41c8aaf3feeb8e7dda11fa31"
+    },
+    {
+      "tier": 1,
+      "kind": "generated",
+      "sha256": "804fa74a7e9cb4a5635200139b80d334249aacf151ca6fb768dbc710ff41d405"
+    },
+    {
+      "tier": 2,
+      "kind": "official",
+      "sha256": "7ab0e39c2e2f2cf45cca88440770cfb7be137721a9cc9d7276f1d4391d20aaf6"
+    },
+    {
+      "tier": 2,
+      "kind": "generated",
+      "sha256": "737d206962319e40a351c640e02ae616c6948f6b02487256ecaf83d4c512dc70"
+    },
+    {
+      "tier": 3,
+      "kind": "official",
+      "sha256": "081698ef8b0bb02aac4b537fe26a4341463bf6e9456327ed619613adddf659a2"
+    },
+    {
+      "tier": 3,
+      "kind": "generated",
+      "sha256": "90ff50895755a182c51dae50adbd071c7e304a22d906441ec2c08fd5dc88bdd5"
+    },
+    {
+      "tier": 4,
+      "kind": "official",
+      "sha256": "bf602ba95ae53fe6dcd8e2b1a52011d35e71d8d560524d88dd78cdafa1807663"
+    },
+    {
+      "tier": 4,
+      "kind": "generated",
+      "sha256": "a44958ab94d39b20a3ebbf71895b90904f427e217efccf58ddb39081fb9daeda"
+    },
+    {
+      "tier": 5,
+      "kind": "official",
+      "sha256": "e43ead73220afe1b5e78d9e907f68a19c0d99728ae8799f29d451ef5286dc061"
+    },
+    {
+      "tier": 5,
+      "kind": "generated",
+      "sha256": "1338c93a42a54fe477332ea45ee09281ffc37b83917240cc418b0fb4b64c8fcb"
+    },
+    {
+      "tier": 6,
+      "kind": "official",
+      "sha256": "f34c1e69af3b9285051c68f33edd7e0b6afc555992c913374d6cd158a93e771a"
+    },
+    {
+      "tier": 6,
+      "kind": "generated",
+      "sha256": "56ec8fa2616397c845c790f72032a72dda32954597f02d207530b41b1f2f1c2f"
+    },
+    {
+      "tier": 7,
+      "kind": "official",
+      "sha256": "52bc22e63740f41d876087d0fc17f6021ab5ef7bdf2412e14f807e5ebe8b5aef"
+    },
+    {
+      "tier": 7,
+      "kind": "generated",
+      "sha256": "5384632872e609335de924f70f503929fee9574838726cd2a8ff330723f70e6b"
+    },
+    {
+      "tier": 8,
+      "kind": "official",
+      "sha256": "41d88d03f072def4dcf0a2c6c43d9e1e084da83cb47fe5476fa6c9cb7444d7f7"
+    },
+    {
+      "tier": 8,
+      "kind": "generated",
+      "sha256": "aeacb28736cd8135dc289af27f757035356562d623f7b1eaec59567bbb8f381f"
+    },
+    {
+      "tier": 9,
+      "kind": "official",
+      "sha256": "375b7eddf99ae0a2ef41439fe15d92d2c8925b57720f3c6c833b9bb64711d2c0"
+    },
+    {
+      "tier": 9,
+      "kind": "generated",
+      "sha256": "d29c7282c32ff868f3e88e9dd50b46dcefd8165951a4a10b2a7dbfa0771f1671"
+    }
+  ]
+}

@@ -141,7 +141,7 @@ FULL_STANDARD_CONTRACT = {
         for difficulty in DIFFICULTIES
     ),
     "evidence": {
-        "official_tier_characterization": ".scratch/multigame-resume/full-standard/r11l.md#reference-characterization",
+        "official_tier_characterization": "docs/generator-evidence/r11l.md#reference-characterization",
         "solution_mechanics": "pebby/games/r11l/generate.py:solution_mechanics",
         "native_budget": "third_party/arc3_games/r11l.py:1407,1807-1811",
         "context_engine_replay": "tests/games/test_r11l.py:test_full_generated_game_replays_without_forced_transitions",

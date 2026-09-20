@@ -100,27 +100,27 @@ class OfficialLevels(unittest.TestCase):
         self.assertTrue(all(FULL_STANDARD_CONTRACT["evidence"].values()))
         self.assertEqual(FULL_STANDARD_CONTRACT["evidence"], {
             "official_tier_characterization": (
-                ".scratch/multigame-resume/full-standard/cd82.md"
+                "docs/generator-evidence/cd82.md"
                 "#official-reference-characterization"
             ),
             "solution_mechanics": (
-                ".scratch/multigame-resume/full-standard/cd82.md"
+                "docs/generator-evidence/cd82.md"
                 "#procedural-generation-and-proof"
             ),
             "native_budget": (
-                ".scratch/multigame-resume/full-standard/cd82.md"
+                "docs/generator-evidence/cd82.md"
                 "#authoritative-source-and-complete-mechanics"
             ),
             "context_engine_replay": (
-                ".scratch/multigame-resume/full-standard/cd82.md"
+                "docs/generator-evidence/cd82.md"
                 "#root-acceptance-2026-09-18"
             ),
             "novelty_split": (
-                ".scratch/multigame-resume/full-standard/cd82.md"
+                "docs/generator-evidence/cd82.md"
                 "#identity-split-and-finite-support"
             ),
             "bounded_rejections": (
-                ".scratch/multigame-resume/full-standard/cd82.md"
+                "docs/generator-evidence/cd82.md"
                 "#bounded-quality-audit"
             ),
         })

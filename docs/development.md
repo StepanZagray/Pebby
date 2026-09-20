@@ -1,40 +1,53 @@
-# Development notes
+# Development
 
 ## Repository layout
 
-```
-third_party/ls20/     verbatim upstream game, its licence, and provenance
-pebby/ls20/           environment, names, layout, rails, planner, generator, and banks
-pebby/agent/          models, data collection, training, and evaluation
-serve.py/inference.py stateless HTTP runtime used by the viewer and HostAI
-ui/                   generated-level viewer and its overlays
-tools/                differential checks, audits, collection, and training helpers
-tests/                engine, data, server, agent, and UI checks
-docs/                 durable project contracts and workflows
-```
+| Path | Purpose |
+|---|---|
+| `pebby/agent/multigame_model.py` | Recurrent pixel policy, click decoder, auxiliary objectives, checkpoint compatibility |
+| `pebby/agent/multigame_training.py` | Manifest audits, fitting, gameplay selection, atomic checkpoints, resume |
+| `pebby/agent/multigame_evaluation.py` | Frozen-policy inference and phased official evaluation |
+| `pebby/multigame.py` | Family registry, native adapters, collection and provenance |
+| `pebby/multigame_dataset.py` | Whole-game datasets, preparation, recovery and split audits |
+| `pebby/multigame_variants.py` | Reversible control, spatial and palette variants |
+| `pebby/games/` | 24 family engines, teachers, generators and contracts |
+| `pebby/ls20/` | Shared LS20 engine, native planner and reference generator dependencies |
+| `third_party/` | Vendored game sources, licenses and provenance |
+| `tools/` | Multi-game collection, audits, training lifecycle and evaluation CLIs; LS20 differential check |
+| `tests/` | Model, lifecycle, data, family and LS20 planner tests |
 
-`pebby/ls20/names.py` is a useful first read: upstream uses randomized identifiers,
-and this module provides Pebby's translation table. The vendored game is not
-modified.
+Multi-game checkpoint and corpus compatibility is retained so Run B and its
+source datasets still load. Retired standalone LS20 controllers and the viewer
+are no longer supported by this tree. Their source, tests and experiment notes
+remain in Git history; `40be7fc` preserves the working tree before consolidation.
 
 ## Checks
 
-Run these commands from the repository root:
-
 ```bash
-uv run python -m unittest discover -s tests
-PYTHONPATH=. uv run python tools/differential.py
-node --check ui/app.js ui/board.js
+uv sync --locked --group dev
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \
+  uv run --group dev python -m pytest tests -q
 ```
 
-Use the module `--help` output as the authoritative reference for other commands;
-training and generation flags are intentionally not duplicated here because they
-change with the implementation.
+Tests use CPU and temporary fixtures. Some compatibility tests use optional local
+checkpoint artifacts and skip when those are absent. Game tests exercise native
+engine logic and pixel arrays without opening desktop windows. Full family
+regressions can take several minutes because they verify real teacher routes.
 
-## Licence and provenance
+For a targeted LS20 symbolic/native comparison:
 
-`third_party/ls20/ls20.py` is the unmodified upstream game source and carries its
-own licence header. The accompanying notices are retained in
-`third_party/ls20/LICENSE`. Read [`third_party/ls20/PROVENANCE.md`](../third_party/ls20/PROVENANCE.md)
-before reusing the vendored game. For commercial use, confirm the licence with the
-copyright holder rather than relying on repository notes.
+```bash
+PYTHONPATH=. uv run python tools/differential.py
+```
+
+Run `--help` on the multi-game tools for bounded collection and evaluation options.
+Do not treat a small smoke corpus or a successful unit test as evidence of model
+mastery. [Model status](../MODEL_STATUS.md) distinguishes frozen-weight results
+from historical training maxima and newly implemented experiments.
+
+## Local outputs
+
+`data/`, `artifacts/`, checkpoints and `.scratch/` are ignored. Preserve complete
+training-run directories, including hidden checkpoint generations and symlinks,
+when backing up or restoring them. Do not rewrite corpus certificates after a
+source cleanup: their hashes describe the code that produced those examples.

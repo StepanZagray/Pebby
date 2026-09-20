@@ -51,7 +51,7 @@ FULL_STANDARD_CONTRACT = {
         for d in DIFFICULTIES
     ],
     "evidence": {
-        "official_tier_characterization": ".scratch/multigame-resume/full-standard/tr87.md",
+        "official_tier_characterization": "docs/generator-evidence/tr87.md",
         "solution_mechanics": "spec.proof + spec.solution_mechanics",
         "native_budget": "spec.native_budget + context replay",
         "context_engine_replay": "spec.proof.context_engine_verified",
