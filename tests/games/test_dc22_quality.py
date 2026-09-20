@@ -145,15 +145,23 @@ def test_generated_frames_keep_native_panel_cues_palette_and_reference_density()
         assert len({pixel for row in official_frame for pixel in row}) >= 6
 
 
-def test_rejection_accounting_is_explicit_and_only_partition_rejects_sampled_rows():
+def test_rejection_accounting_includes_failed_native_replays():
     totals = Counter()
     for difficulty in DIFFICULTIES:
         for seed in range(8):
-            spec = generate(seed, difficulty, split="train")
+            diagnostics = {}
+            spec = generate(seed, difficulty, split="train", diagnostics=diagnostics)
             assert spec is not None
-            totals.update(spec["generation_exclusions"])
-    assert set(totals) <= {"geometry_split"}
+            exclusions = spec["generation_exclusions"]
+            assert exclusions == diagnostics["reasons"] == spec["proof"]["generation_exclusions"]
+            assert sum(exclusions.values()) == diagnostics["attempts"] - 1
+            assert all(type(count) is int and count > 0 for count in exclusions.values())
+            totals.update(exclusions)
+    # Some deterministic drafts fail native replay and must be rejected before
+    # acceptance; split assignment is not the only rejection gate.
+    assert set(totals) == {"geometry_split", "native_replay"}
     assert totals["geometry_split"] > 0
+    assert totals["native_replay"] > 0
 
 
 def test_official_coupled_compositions_are_installed_and_natively_witnessed():
